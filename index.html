@@ -73,6 +73,9 @@
             deleteDoc,
             orderBy
         } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore.js";
+        import { getStorage, ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-storage.js";
+        import { getDatabase, ref as dbRef, onValue, onDisconnect, set as dbSet, serverTimestamp as rtdbServerTimestamp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-database.js";
+
 
         // Make Firebase services available globally for the Babel script
         window.firebaseServices = {
@@ -80,7 +83,8 @@
             createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut,
             sendPasswordResetEmail, deleteUser, getFirestore, doc, setDoc, getDoc,
             collection, onSnapshot, runTransaction, updateDoc, increment, addDoc,
-            query, where, getDocs, serverTimestamp, writeBatch, deleteDoc, orderBy
+            query, where, getDocs, serverTimestamp, writeBatch, deleteDoc, orderBy,
+            getStorage, ref, uploadBytes, getDownloadURL, getDatabase, dbRef, onValue, onDisconnect, dbSet, rtdbServerTimestamp
         };
     </script>
 
@@ -91,7 +95,8 @@
             createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut,
             sendPasswordResetEmail, deleteUser, getFirestore, doc, setDoc, getDoc,
             collection, onSnapshot, runTransaction, updateDoc, increment, addDoc,
-            query, where, getDocs, serverTimestamp, writeBatch, deleteDoc, orderBy
+            query, where, getDocs, serverTimestamp, writeBatch, deleteDoc, orderBy,
+            getStorage, ref, uploadBytes, getDownloadURL, getDatabase, dbRef, onValue, onDisconnect, dbSet, rtdbServerTimestamp
         } = window.firebaseServices;
 
         // --- MANUELLE FIREBASE KONFIGURATION ---
@@ -102,7 +107,7 @@
           storageBucket: "status-adcc2.appspot.com",
           messagingSenderId: "774008839527",
           appId: "1:774008839527:web:abaa21efce195f80ed23c2",
-          measurementId: "G-36PC2SGFH2"
+          databaseURL: "https://status-adcc2-default-rtdb.firebaseio.com"
         };
 
         const appId = 'status-adcc2';
@@ -112,6 +117,8 @@
         let analytics;
         let auth;
         let db;
+        let storage;
+        let rtdb;
         let firebaseError = null;
 
         try {
@@ -119,17 +126,15 @@
             analytics = getAnalytics(app);
             auth = getAuth(app);
             db = getFirestore(app);
+            storage = getStorage(app);
+            rtdb = getDatabase(app);
         } catch (e) {
             console.error("Firebase-Initialisierungsfehler:", e);
             firebaseError = e;
         }
         
-        // --- Inline SVG Icons (Ersatz für Lucide-React) ---
-        const Icon = ({ path, className = "w-6 h-6" }) => (
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
-                {path}
-            </svg>
-        );
+        // --- Inline SVG Icons ---
+        const Icon = ({ path, className = "w-6 h-6" }) => <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>{path}</svg>;
         const CrownIcon = () => <Icon path={<><path d="m2 4 3 12h14l3-12-6 7-4-7-4 7-6-7zm3 16h14"/></>} />;
         const UserIcon = () => <Icon path={<><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></>} />;
         const ShieldCheckIcon = () => <Icon path={<><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></>} />;
@@ -151,6 +156,8 @@
         const PhoneOffIcon = () => <Icon path={<><path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 1.72 2v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91"/><line x1="22" x2="2" y1="2" y2="22"/></>} />;
         const MessageSquareIcon = () => <Icon path={<><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></>} />;
         const UserPlusIcon = () => <Icon path={<><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" x2="19" y1="8" y2="14"/><line x1="22" x2="16" y1="11" y2="11"/></>} />;
+        const DownloadIcon = () => <Icon path={<><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></>} />;
+        const CameraIcon = () => <Icon path={<><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></>} />;
 
 
         // --- Hilfskomponenten & UI-Elemente ---
@@ -327,6 +334,7 @@
                     transaction.set(userDocRef, {
                         uid: user.uid, email: user.email, username: chosenUsername, role,
                         createdAt: new Date(), isBanned: false, banCount: 0, bannedBy: null,
+                        photoURL: null // Hinzufügen des Profilbild-Feldes
                     });
                 });
             };
@@ -530,6 +538,7 @@
             const [friends, setFriends] = useState([]);
             const [requests, setRequests] = useState([]);
             const [sentRequests, setSentRequests] = useState([]);
+            const [onlineStatus, setOnlineStatus] = useState({});
             const [loading, setLoading] = useState(true);
 
             useEffect(() => {
@@ -550,7 +559,13 @@
                 const sentRequestsRef = collection(db, `artifacts/${appId}/public/data/users/${currentUserData.uid}/sentRequests`);
                 const unsubSent = onSnapshot(sentRequestsRef, snapshot => setSentRequests(snapshot.docs.map(doc => ({id: doc.id, ...doc.data()}))));
 
-                return () => { unsubAllUsers(); unsubFriends(); unsubRequests(); unsubSent(); }
+                const statusRef = dbRef(rtdb, `status/`);
+                const unsubStatus = onValue(statusRef, (snapshot) => {
+                    const statuses = snapshot.val() || {};
+                    setOnlineStatus(statuses);
+                });
+
+                return () => { unsubAllUsers(); unsubFriends(); unsubRequests(); unsubSent(); unsubStatus(); }
             }, [currentUserData]);
             
             const sendFriendRequest = async (targetUser) => {
@@ -578,9 +593,9 @@
                 try {
                     const batch = writeBatch(db);
                     const myFriendRef = doc(db, `artifacts/${appId}/public/data/users/${currentUserData.uid}/friends`, request.uid);
-                    batch.set(myFriendRef, { username: request.username, uid: request.uid });
+                    batch.set(myFriendRef, { username: request.username, uid: request.uid, photoURL: request.photoURL || null });
                     const theirFriendRef = doc(db, `artifacts/${appId}/public/data/users/${request.uid}/friends`, currentUserData.uid);
-                    batch.set(theirFriendRef, { username: currentUserData.username, uid: currentUserData.uid });
+                    batch.set(theirFriendRef, { username: currentUserData.username, uid: currentUserData.uid, photoURL: currentUserData.photoURL || null });
                     const requestRef = doc(db, `artifacts/${appId}/public/data/users/${currentUserData.uid}/friendRequests`, request.uid);
                     batch.delete(requestRef);
                     const sentRequestRef = doc(db, `artifacts/${appId}/public/data/users/${request.uid}/sentRequests`, currentUserData.uid);
@@ -652,7 +667,10 @@
 
                                     return (
                                         <div key={user.uid} className="flex justify-between items-center bg-gray-700 p-2 rounded">
-                                            <span>{user.username}</span>
+                                            <div className="flex items-center gap-2">
+                                                <span className={`w-2 h-2 rounded-full ${onlineStatus[user.uid]?.state === 'online' ? 'bg-green-500' : 'bg-gray-500'}`}></span>
+                                                <span>{user.username}</span>
+                                            </div>
                                             {buttonContent}
                                         </div>
                                     )
@@ -692,7 +710,10 @@
                              <div className="space-y-1 max-h-24 overflow-y-auto">
                                 {friends.length > 0 ? friends.map(friend => (
                                     <div key={friend.id} className="flex justify-between items-center bg-gray-700 p-2 rounded">
-                                        <span>{friend.username}</span>
+                                        <div className="flex items-center gap-2">
+                                            <span className={`w-2 h-2 rounded-full ${onlineStatus[friend.id]?.state === 'online' ? 'bg-green-500' : 'bg-gray-500'}`}></span>
+                                            <span>{friend.username}</span>
+                                        </div>
                                         <Button onClick={() => { onChatStart(friend); onClose(); }} size="sm"><MessageSquareIcon className="w-4 h-4"/></Button>
                                     </div>
                                 )) : <p className="text-sm text-gray-400">Noch keine Freunde.</p>}
@@ -881,6 +902,7 @@
             const [activeChat, setActiveChat] = useState(null);
             
             const [notification, setNotification] = useState(null);
+            const fileInputRef = useRef(null);
 
             useEffect(() => {
                 if (notification) {
@@ -902,11 +924,26 @@
                 if (user) {
                     const userDocRef = doc(db, `artifacts/${appId}/public/data/users`, user.uid);
                     const unsubscribe = onSnapshot(userDocRef, (docSnap) => {
-                        setUserData(docSnap.exists() ? docSnap.data() : null);
+                        setUserData(docSnap.exists() ? {...docSnap.data(), uid: user.uid} : null);
                     }, (error) => {
                         console.error("Fehler beim Lauschen auf Benutzerdaten:", error);
                         setUserData(null);
                     });
+                    
+                    // Setup presence system
+                    const userStatusDatabaseRef = dbRef(rtdb, '/status/' + user.uid);
+                    const isOfflineForDatabase = { state: 'offline', last_changed: rtdbServerTimestamp() };
+                    const isOnlineForDatabase = { state: 'online', last_changed: rtdbServerTimestamp() };
+                    
+                    const connectedRef = dbRef(rtdb, '.info/connected');
+                    onValue(connectedRef, (snap) => {
+                        if (snap.val() === true) {
+                            onDisconnect(userStatusDatabaseRef).set(isOfflineForDatabase).then(() => {
+                                dbSet(userStatusDatabaseRef, isOnlineForDatabase);
+                            });
+                        }
+                    });
+
                     return () => unsubscribe();
                 } else {
                     setUserData(null);
@@ -931,6 +968,36 @@
                 setNotification({type: 'info', message: 'Erfolgreich abgemeldet.'});
             };
             
+            const handleDownload = () => {
+                const htmlContent = document.documentElement.outerHTML;
+                const blob = new Blob([htmlContent], { type: 'text/html' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'FortniteStatusApp.html';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            };
+
+            const handleProfilePictureChange = async (e) => {
+                const file = e.target.files[0];
+                if (!file || !user) return;
+
+                const storageRef = ref(storage, `profile-pictures/${user.uid}`);
+                try {
+                    await uploadBytes(storageRef, file);
+                    const photoURL = await getDownloadURL(storageRef);
+                    const userDocRef = doc(db, `artifacts/${appId}/public/data/users`, user.uid);
+                    await updateDoc(userDocRef, { photoURL });
+                    setNotification({type: 'success', message: 'Profilbild aktualisiert!'});
+                } catch (error) {
+                    console.error("Fehler beim Hochladen des Profilbilds:", error);
+                    setNotification({type: 'error', message: 'Profilbild konnte nicht hochgeladen werden.'});
+                }
+            };
+
             if (firebaseError) {
                 return <div className="bg-gray-900 min-h-screen flex items-center justify-center text-white"><XCircleIcon className="text-red-500 mr-2"/> Kritischer Fehler.</div>;
             }
@@ -975,7 +1042,9 @@
                                     {userData.role === 'founder' && <CrownIcon className="w-5 h-5 text-yellow-400" title="Gründer"/>}
                                     {userData.role === 'admin' && <ShieldCheckIcon className="w-5 h-5 text-blue-400" title="Admin"/>}
                                     <button onClick={() => setFriendsPanelOpen(true)} className="p-2 rounded-full hover:bg-gray-700" title="Freunde"><UsersIcon /></button>
-                                    <button onClick={() => setDropdownOpen(!isDropdownOpen)} className="bg-gray-700 w-10 h-10 rounded-full flex items-center justify-center"><UserIcon /></button>
+                                    <button onClick={() => setDropdownOpen(!isDropdownOpen)} className="bg-gray-700 w-10 h-10 rounded-full flex items-center justify-center overflow-hidden">
+                                        {userData.photoURL ? <img src={userData.photoURL} alt="Profil" className="w-full h-full object-cover" /> : <UserIcon />}
+                                    </button>
                                 </div>
                             ) : (
                                 <button onClick={() => setAuthModalOpen(true)} title="Anmelden / Registrieren" className="bg-gray-700 w-10 h-10 rounded-full flex items-center justify-center hover:bg-gray-600 transition">
@@ -985,6 +1054,11 @@
                             {isDropdownOpen && user && userData && (
                                 <div className="absolute right-0 mt-2 w-56 bg-gray-800 rounded-lg shadow-xl z-20 border border-gray-700">
                                     <div className="p-2">
+                                        <button onClick={() => fileInputRef.current.click()} className="w-full text-left px-4 py-2 text-sm text-white hover:bg-gray-700 rounded-md flex items-center gap-2">
+                                            <CameraIcon className="w-4 h-4"/> Profilbild ändern
+                                        </button>
+                                        <input type="file" ref={fileInputRef} onChange={handleProfilePictureChange} className="hidden" accept="image/*" />
+                                        <div className="border-t border-gray-700 my-1"></div>
                                         {(userData.role === 'admin' || userData.role === 'founder') && (
                                             <button onClick={() => { setAdminPanelOpen(true); setDropdownOpen(false); }} className="w-full text-left px-4 py-2 text-sm text-white hover:bg-gray-700 rounded-md flex items-center gap-2"><HammerIcon className="w-4 h-4"/> Admin Panel</button>
                                         )}
@@ -1003,6 +1077,10 @@
                             <Card>
                                 <h2 className="text-xl font-bold mb-3">Willkommen!</h2>
                                 <p className="text-gray-300">Dies ist deine zentrale Anlaufstelle für den Fortnite-Status. Melde dich an, um Notizen zu erstellen, Freunde hinzuzufügen und mit ihnen zu chatten.</p>
+                                <Button onClick={handleDownload} variant="secondary" className="mt-4">
+                                    <DownloadIcon className="w-4 h-4" />
+                                    App herunterladen
+                                </Button>
                             </Card>
                         </div>
                     </main>

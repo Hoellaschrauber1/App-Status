@@ -147,7 +147,7 @@
     <script type="module">
         // Import Firebase modules
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getStorage, ref, getDownloadURL, uploadBytesResumable } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
+        import { getStorage, ref, getDownloadURL, uploadBytesResumable, deleteObject } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
         import { getAuth, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, updateProfile, deleteUser, sendEmailVerification } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, getDoc, getDocs, collection, writeBatch, serverTimestamp, query, where, onSnapshot, updateDoc, arrayUnion, arrayRemove, addDoc, orderBy, deleteDoc, increment } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
@@ -538,11 +538,30 @@
                 snapshot.forEach(doc => {
                     const video = { id: doc.id, ...doc.data() };
                     const card = document.createElement('div');
-                    card.className = 'glass-card rounded-lg overflow-hidden cursor-pointer group';
+                    card.className = 'glass-card rounded-lg overflow-hidden group';
+                    
+                    const canDelete = currentUserProfile.role === 'admin' || currentUserProfile.role === 'founder' || video.uploaderId === currentUser.uid;
+
                     card.innerHTML = `
-                        <div class="relative"><img src="${video.thumbnailUrl}" alt="${video.title}" class="w-full h-48 object-cover transition-transform duration-300 group-hover:scale-105"><div class="absolute bottom-2 right-2 bg-black/50 text-white text-xs px-2 py-1 rounded-md flex items-center gap-1"><i data-lucide="eye" class="w-4 h-4"></i><span>${video.views || 0}</span></div></div>
-                        <div class="p-4"><h3 class="font-bold text-white truncate">${video.title}</h3><p class="text-sm text-gray-400">${video.uploaderName}</p></div>`;
-                    card.addEventListener('click', () => openVideoPlayer(video.id));
+                        <div class="relative">
+                            <img src="${video.thumbnailUrl}" alt="${video.title}" class="w-full h-48 object-cover transition-transform duration-300 group-hover:scale-105 cursor-pointer">
+                            <div class="absolute bottom-2 right-2 bg-black/50 text-white text-xs px-2 py-1 rounded-md flex items-center gap-1">
+                                <i data-lucide="eye" class="w-4 h-4"></i>
+                                <span>${video.views || 0}</span>
+                            </div>
+                            ${canDelete ? `<button data-video-id="${video.id}" class="delete-video-btn absolute top-2 right-2 bg-red-600/70 hover:bg-red-500 p-2 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"><i data-lucide="trash-2" class="w-4 h-4"></i></button>` : ''}
+                        </div>
+                        <div class="p-4">
+                            <h3 class="font-bold text-white truncate">${video.title}</h3>
+                            <p class="text-sm text-gray-400">${video.uploaderName}</p>
+                        </div>`;
+                    card.querySelector('img').addEventListener('click', () => openVideoPlayer(video.id));
+                    if(canDelete) {
+                        card.querySelector('.delete-video-btn').addEventListener('click', (e) => {
+                            e.stopPropagation();
+                            showConfirmationModal(`Möchtest du das Video "${video.title}" wirklich löschen?`, () => deleteVideo(video.id));
+                        });
+                    }
                     videoGrid.appendChild(card);
                 });
                 lucide.createIcons();
@@ -570,6 +589,44 @@
             document.getElementById('like-video-btn').addEventListener('click', () => toggleLike(videoId));
             document.getElementById('add-comment-form').addEventListener('submit', (e) => { e.preventDefault(); const input = document.getElementById('comment-input'); addComment(videoId, input.value); input.value = ''; });
             lucide.createIcons();
+        };
+
+        const deleteVideo = async (videoId) => {
+            showLoader("Lösche Video...");
+            try {
+                const videoRef = doc(db, "videos", videoId);
+                const videoSnap = await getDoc(videoRef);
+                if (!videoSnap.exists()) {
+                    throw new Error("Video document not found.");
+                }
+                const videoData = videoSnap.data();
+
+                // Delete files from Storage
+                const videoFileRef = ref(storage, videoData.videoUrl);
+                const thumbFileRef = ref(storage, videoData.thumbnailUrl);
+                await deleteObject(videoFileRef);
+                await deleteObject(thumbFileRef);
+
+                // Delete comments subcollection
+                const commentsQuery = query(collection(db, `videos/${videoId}/comments`));
+                const commentsSnapshot = await getDocs(commentsQuery);
+                const batch = writeBatch(db);
+                commentsSnapshot.forEach(doc => {
+                    batch.delete(doc.ref);
+                });
+                await batch.commit();
+
+                // Delete the main video document
+                await deleteDoc(videoRef);
+
+                showToast("Video erfolgreich gelöscht.", "success");
+                closeModal(genericModal); // Close if video player was open
+            } catch (error) {
+                console.error("Error deleting video:", error);
+                showToast("Fehler beim Löschen des Videos.", "error");
+            } finally {
+                hideLoader();
+            }
         };
 
         const updateLikeButton = async (videoId) => {
@@ -682,6 +739,7 @@
                 };
 
                 try {
+                    await auth.currentUser.getIdToken(true); // Force refresh token
                     const thumbRef = ref(storage, `thumbnails/${Date.now()}_${thumbnailFile.name}`);
                     const thumbnailUrl = await uploadFile(thumbnailFile, thumbRef, 'Lade Vorschaubild hoch...');
                     
@@ -872,7 +930,6 @@
             const collectionPath = type === 'group' ? `groups/${chatId}/messages` : `directMessages/${chatId}/messages`;
             const chatRoomRef = doc(db, type === 'group' ? 'groups' : 'directMessages', chatId);
 
-            // FIX: Ensure the chat document exists before attaching listeners that update it.
             try {
                 await setDoc(chatRoomRef, { 
                     ...(type === 'direct' && { members: chatId.split('_') }),
@@ -950,7 +1007,12 @@
                 const text = chatInput.value.trim();
                 if (text) {
                     chatInput.value = '';
-                    await addDoc(collection(db, collectionPath), { text, senderId: currentUser.uid, senderName: currentUserProfile.displayName, timestamp: serverTimestamp(), readBy: [currentUser.uid] });
+                    try {
+                        await addDoc(collection(db, collectionPath), { text, senderId: currentUser.uid, senderName: currentUserProfile.displayName, timestamp: serverTimestamp(), readBy: [currentUser.uid] });
+                    } catch (error) {
+                        console.error("Error sending message:", error);
+                        showToast("Nachricht konnte nicht gesendet werden.", "error");
+                    }
                 }
             });
 
@@ -999,16 +1061,52 @@
             });
             submitBtn.addEventListener('click', async () => {
                 if (!selectedFile) return;
-                showLoader('Bild wird hochgeladen...');
-                const storageRef = ref(storage, `profilePictures/${currentUser.uid}`);
+                
+                modalContent.innerHTML = `
+                    <div id="upload-progress-container">
+                        <p id="upload-status-text" class="text-center mb-2">Lade Profilbild hoch...</p>
+                        <div class="w-full bg-slate-700 rounded-full h-4"><div id="progress-bar" class="bg-blue-600 h-4 rounded-full transition-all duration-300" style="width: 0%"></div></div>
+                        <p id="progress-percentage" class="text-center text-sm mt-1">0%</p>
+                    </div>`;
+                modalFooter.innerHTML = '';
+                
                 try {
-                    const snapshot = await uploadBytes(storageRef, selectedFile);
-                    const downloadURL = await getDownloadURL(snapshot.ref);
-                    await updateDoc(doc(db, 'users', currentUser.uid), { photoURL: downloadURL });
-                    await updateProfile(auth.currentUser, { photoURL: downloadURL });
-                    showToast('Profilbild erfolgreich aktualisiert!', 'success');
+                    await auth.currentUser.getIdToken(true);
+                    const storageRef = ref(storage, `profilePictures/${currentUser.uid}`);
+                    const uploadTask = uploadBytesResumable(storageRef, selectedFile);
+
+                    uploadTask.on('state_changed', 
+                        (snapshot) => {
+                            const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+                            const progressBar = document.getElementById('progress-bar');
+                            const progressPercentage = document.getElementById('progress-percentage');
+                            if (progressBar) progressBar.style.width = progress + '%';
+                            if (progressPercentage) progressPercentage.textContent = Math.round(progress) + '%';
+                        }, 
+                        (error) => {
+                            console.error("Upload failed", error);
+                            showToast('Fehler beim Hochladen des Bildes.', 'error');
+                            closeModal(genericModal);
+                        }, 
+                        async () => {
+                            try {
+                                const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
+                                await updateDoc(doc(db, 'users', currentUser.uid), { photoURL: downloadURL });
+                                await updateProfile(auth.currentUser, { photoURL: downloadURL });
+                                showToast('Profilbild erfolgreich aktualisiert!', 'success');
+                                closeModal(genericModal);
+                            } catch (e) {
+                                console.error("Error updating profile:", e);
+                                showToast('Fehler beim Aktualisieren des Profils.', 'error');
+                                closeModal(genericModal);
+                            }
+                        }
+                    );
+                } catch(error) {
+                    console.error("Token refresh failed:", error);
+                    showToast('Authentifizierung fehlgeschlagen. Bitte erneut anmelden.', 'error');
                     closeModal(genericModal);
-                } catch (error) { console.error("Upload failed", error); showToast('Fehler beim Hochladen des Bildes.', 'error'); } finally { hideLoader(); }
+                }
             });
         };
         

@@ -191,6 +191,7 @@
         let currentUserProfile = null;
         let unsubscribeUserListener = null;
         let isRegistering = false;
+        let typingTimeout = null;
 
         // --- HELPER & MODAL FUNCTIONS ---
         const showLoader = (text = 'Lade...') => {
@@ -719,7 +720,7 @@
             const groupsQuery = query(collection(db, 'groups'), where('members', 'array-contains', currentUser.uid));
             onSnapshot(groupsQuery, (snapshot) => {
                 const list = document.getElementById('chats-list'); if (!list) return; list.innerHTML = '';
-                if(snapshot.empty) { list.innerHTML = `<p class="text-center text-gray-500 mt-8">Keine Chats vorhanden.</p>`; return; }
+                if(snapshot.empty) { list.innerHTML = `<p class="text-center text-gray-500 mt-8">Keine Gruppen-Chats vorhanden.</p>`; }
                 snapshot.forEach(doc => {
                     const group = { id: doc.id, ...doc.data() };
                     const chatItem = document.createElement('div');
@@ -807,12 +808,19 @@
                     const user = userDoc.data();
                     const friendCard = document.createElement('div');
                     friendCard.className = 'glass-card p-3 flex items-center justify-between';
-                    friendCard.innerHTML = `<div class="flex items-center gap-3"><img src="${user.photoURL || `https://placehold.co/40x40/1E293B/FFFFFF?text=${user.displayName.charAt(0)}`}" class="w-10 h-10 rounded-full object-cover"><p class="font-semibold text-white">${user.displayName}</p></div><button data-id="${uid}" class="remove-friend-btn text-red-500 hover:text-red-400"><i data-lucide="user-minus" class="w-5 h-5"></i></button>`;
+                    friendCard.innerHTML = `<div class="flex items-center gap-3"><img src="${user.photoURL || `https://placehold.co/40x40/1E293B/FFFFFF?text=${user.displayName.charAt(0)}`}" class="w-10 h-10 rounded-full object-cover"><p class="font-semibold text-white">${user.displayName}</p></div>
+                    <div class="flex items-center gap-2">
+                        <button data-id="${user.id}" data-name="${user.displayName}" class="call-friend-btn text-green-400 hover:text-green-300"><i data-lucide="phone"></i></button>
+                        <button data-id="${user.id}" data-name="${user.displayName}" class="chat-friend-btn text-blue-400 hover:text-blue-300"><i data-lucide="message-circle"></i></button>
+                        <button data-id="${user.id}" class="remove-friend-btn text-red-500 hover:text-red-400"><i data-lucide="user-minus"></i></button>
+                    </div>`;
                     container.appendChild(friendCard);
                 }
             }
             lucide.createIcons();
             document.querySelectorAll('.remove-friend-btn').forEach(btn => btn.onclick = (e) => removeFriend(e.currentTarget.dataset.id));
+            document.querySelectorAll('.chat-friend-btn').forEach(btn => btn.onclick = (e) => openDirectChat(e.currentTarget.dataset.id, e.currentTarget.dataset.name));
+            document.querySelectorAll('.call-friend-btn').forEach(btn => btn.onclick = (e) => showCallingModal(e.currentTarget.dataset.name));
         };
         const removeFriend = async (friendId) => { showConfirmationModal('Bist du sicher, dass du diesen Freund entfernen möchtest?', async () => { try { const batch = writeBatch(db); const currentUserRef = doc(db, `users/${currentUser.uid}`); const friendUserRef = doc(db, `users/${friendId}`); batch.update(currentUserRef, { friends: arrayRemove(friendId) }); batch.update(friendUserRef, { friends: arrayRemove(currentUser.uid) }); await batch.commit(); showToast('Freund entfernt.', 'info'); } catch (error) { showToast(`Fehler: ${error.message}`, 'error'); } }); };
         
@@ -832,31 +840,127 @@
                 try { await addDoc(collection(db, 'groups'), { name, description, ownerId: currentUser.uid, members: [currentUser.uid], createdAt: serverTimestamp() }); showToast('Gruppe erfolgreich erstellt!', 'success'); closeModal(genericModal); } catch (error) { showToast(`Fehler: ${error.message}`, 'error'); } finally { hideLoader(); }
             });
         };
+
+        const getChatRoomId = (uid1, uid2) => [uid1, uid2].sort().join('_');
+
+        const openDirectChat = (friendId, friendName) => {
+            const chatRoomId = getChatRoomId(currentUser.uid, friendId);
+            openChat(chatRoomId, friendName, 'direct');
+        };
+
         const openGroupChat = (groupId, groupName) => {
+            openChat(groupId, groupName, 'group');
+        };
+
+        const openChat = (chatId, chatName, type) => {
             const modalTitle = document.getElementById('generic-modal-title');
             const modalContent = document.getElementById('generic-modal-content');
             const modalFooter = document.getElementById('generic-modal-footer');
-            modalTitle.textContent = groupName;
+
+            modalTitle.textContent = chatName;
             modalContent.innerHTML = `<div id="chat-messages" class="h-96 overflow-y-auto flex flex-col-reverse p-2 space-y-2 space-y-reverse"></div>`;
-            modalFooter.innerHTML = `<form id="chat-form" class="flex gap-2"><input id="chat-input" class="flex-grow p-2 bg-slate-800 border border-slate-700 rounded-lg" placeholder="Nachricht schreiben..." autocomplete="off"><button type="submit" class="btn-primary"><i data-lucide="send"></i></button></form>`;
+            modalFooter.innerHTML = `
+                <div id="typing-indicator" class="text-sm text-gray-400 h-5 italic"></div>
+                <form id="chat-form" class="flex gap-2">
+                    <input id="chat-input" class="flex-grow p-2 bg-slate-800 border border-slate-700 rounded-lg" placeholder="Nachricht schreiben..." autocomplete="off">
+                    <button type="submit" class="btn-primary"><i data-lucide="send"></i></button>
+                </form>
+            `;
             lucide.createIcons();
             openModal(genericModal);
+            
+            const collectionPath = type === 'group' ? `groups/${chatId}/messages` : `directMessages/${chatId}/messages`;
+            const chatRoomRef = doc(db, type === 'group' ? 'groups' : 'directMessages', chatId);
+
             const messagesContainer = document.getElementById('chat-messages');
-            const messagesQuery = query(collection(db, `groups/${groupId}/messages`), orderBy('timestamp', 'desc'));
+            const messagesQuery = query(collection(db, collectionPath), orderBy('timestamp', 'desc'));
             const unsubscribeChat = onSnapshot(messagesQuery, (snapshot) => {
                 messagesContainer.innerHTML = '';
                 snapshot.forEach(doc => {
-                    const msg = doc.data();
+                    const msg = {id: doc.id, ...doc.data()};
                     const messageEl = document.createElement('div');
                     const isSender = msg.senderId === currentUser.uid;
                     messageEl.className = `flex flex-col ${isSender ? 'items-end' : 'items-start'}`;
-                    messageEl.innerHTML = `<div class="max-w-xs lg:max-w-md px-3 py-2 rounded-lg ${isSender ? 'bg-blue-700' : 'bg-slate-700'}">${!isSender ? `<p class="text-xs font-bold text-blue-300">${msg.senderName}</p>` : ''}<p class="text-white">${msg.text}</p><p class="text-xs text-gray-400 text-right mt-1">${new Date(msg.timestamp?.toDate()).toLocaleTimeString()}</p></div>`;
+                    
+                    let readReceipt = '';
+                    if (isSender) {
+                        if (msg.readBy && msg.readBy.length > 0) {
+                            readReceipt = `<i data-lucide="check-check" class="w-4 h-4 text-blue-400"></i>`; // Gelesen
+                        } else {
+                            readReceipt = `<i data-lucide="check" class="w-4 h-4 text-gray-500"></i>`; // Gesendet
+                        }
+                    }
+
+                    messageEl.innerHTML = `
+                        <div class="max-w-xs lg:max-w-md px-3 py-2 rounded-lg ${isSender ? 'bg-blue-700' : 'bg-slate-700'}">
+                            ${!isSender && type === 'group' ? `<p class="text-xs font-bold text-blue-300">${msg.senderName}</p>` : ''}
+                            <p class="text-white">${msg.text}</p>
+                            <div class="flex items-center justify-end gap-1 mt-1">
+                                <p class="text-xs text-gray-400">${new Date(msg.timestamp?.toDate()).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</p>
+                                ${readReceipt}
+                            </div>
+                        </div>`;
                     messagesContainer.appendChild(messageEl);
+                    if (!isSender && (!msg.readBy || !msg.readBy.includes(currentUser.uid))) {
+                        updateDoc(doc.ref, { readBy: arrayUnion(currentUser.uid) });
+                    }
                 });
+                lucide.createIcons();
             });
-            document.getElementById('chat-form').addEventListener('submit', async (e) => { e.preventDefault(); const input = document.getElementById('chat-input'); const text = input.value.trim(); if (text) { input.value = ''; await addDoc(collection(db, `groups/${groupId}/messages`), { text, senderId: currentUser.uid, senderName: currentUserProfile.displayName, timestamp: serverTimestamp() }); } });
-            const observer = new MutationObserver((mutations) => { if (genericModal.classList.contains('hidden')) { unsubscribeChat(); observer.disconnect(); } });
+
+            const typingIndicator = document.getElementById('typing-indicator');
+            const unsubscribeTyping = onSnapshot(chatRoomRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    const typingUsers = docSnap.data().typing || {};
+                    const otherTypers = Object.keys(typingUsers).filter(uid => uid !== currentUser.uid && typingUsers[uid]);
+                    if (otherTypers.length > 0) {
+                        typingIndicator.textContent = '... schreibt';
+                    } else {
+                        typingIndicator.textContent = '';
+                    }
+                }
+            });
+
+            const chatInput = document.getElementById('chat-input');
+            chatInput.addEventListener('input', () => {
+                clearTimeout(typingTimeout);
+                updateDoc(chatRoomRef, { [`typing.${currentUser.uid}`]: true });
+                typingTimeout = setTimeout(() => {
+                    updateDoc(chatRoomRef, { [`typing.${currentUser.uid}`]: false });
+                }, 2000);
+            });
+
+            document.getElementById('chat-form').addEventListener('submit', async (e) => {
+                e.preventDefault();
+                clearTimeout(typingTimeout);
+                updateDoc(chatRoomRef, { [`typing.${currentUser.uid}`]: false });
+                const text = chatInput.value.trim();
+                if (text) {
+                    chatInput.value = '';
+                    await addDoc(collection(db, collectionPath), { text, senderId: currentUser.uid, senderName: currentUserProfile.displayName, timestamp: serverTimestamp(), readBy: [] });
+                }
+            });
+
+            const observer = new MutationObserver((mutations) => {
+                if (genericModal.classList.contains('hidden')) {
+                    unsubscribeChat();
+                    unsubscribeTyping();
+                    updateDoc(chatRoomRef, { [`typing.${currentUser.uid}`]: false });
+                    observer.disconnect();
+                }
+            });
             observer.observe(genericModal, { attributes: true });
+        };
+        
+        const showCallingModal = (friendName) => {
+            const modalTitle = document.getElementById('generic-modal-title');
+            const modalContent = document.getElementById('generic-modal-content');
+            const modalFooter = document.getElementById('generic-modal-footer');
+            modalTitle.textContent = `Rufe ${friendName} an`;
+            modalContent.innerHTML = `<div class="text-center p-8"><div class="loader mx-auto"></div><p class="mt-4">Verbinde...</p><p class="text-xs text-gray-500 mt-2">(Anruf-Funktion ist derzeit eine Simulation)</p></div>`;
+            modalFooter.innerHTML = `<button id="end-call-btn" class="btn-primary bg-red-600 hover:bg-red-500 w-full">Anruf beenden</button>`;
+            openModal(genericModal);
+            document.getElementById('end-call-btn').onclick = () => closeModal(genericModal);
         };
         
         const showProfilePicModal = () => {

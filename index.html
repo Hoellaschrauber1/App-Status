@@ -852,7 +852,7 @@
             openChat(groupId, groupName, 'group');
         };
 
-        const openChat = (chatId, chatName, type) => {
+        const openChat = async (chatId, chatName, type) => {
             const modalTitle = document.getElementById('generic-modal-title');
             const modalContent = document.getElementById('generic-modal-content');
             const modalFooter = document.getElementById('generic-modal-footer');
@@ -872,6 +872,19 @@
             const collectionPath = type === 'group' ? `groups/${chatId}/messages` : `directMessages/${chatId}/messages`;
             const chatRoomRef = doc(db, type === 'group' ? 'groups' : 'directMessages', chatId);
 
+            // FIX: Ensure the chat document exists before attaching listeners that update it.
+            try {
+                await setDoc(chatRoomRef, { 
+                    ...(type === 'direct' && { members: chatId.split('_') }),
+                    typing: {}
+                }, { merge: true });
+            } catch (e) {
+                console.error("Error ensuring chat document exists:", e);
+                showToast("Konnte den Chat nicht öffnen.", "error");
+                closeModal(genericModal);
+                return;
+            }
+
             const messagesContainer = document.getElementById('chat-messages');
             const messagesQuery = query(collection(db, collectionPath), orderBy('timestamp', 'desc'));
             const unsubscribeChat = onSnapshot(messagesQuery, (snapshot) => {
@@ -884,7 +897,7 @@
                     
                     let readReceipt = '';
                     if (isSender) {
-                        if (msg.readBy && msg.readBy.length > 0) {
+                        if (msg.readBy && msg.readBy.length > 1) {
                             readReceipt = `<i data-lucide="check-check" class="w-4 h-4 text-blue-400"></i>`; // Gelesen
                         } else {
                             readReceipt = `<i data-lucide="check" class="w-4 h-4 text-gray-500"></i>`; // Gesendet
@@ -937,7 +950,7 @@
                 const text = chatInput.value.trim();
                 if (text) {
                     chatInput.value = '';
-                    await addDoc(collection(db, collectionPath), { text, senderId: currentUser.uid, senderName: currentUserProfile.displayName, timestamp: serverTimestamp(), readBy: [] });
+                    await addDoc(collection(db, collectionPath), { text, senderId: currentUser.uid, senderName: currentUserProfile.displayName, timestamp: serverTimestamp(), readBy: [currentUser.uid] });
                 }
             });
 

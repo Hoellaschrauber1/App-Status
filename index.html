@@ -15,6 +15,9 @@
     <!-- Babel for JSX transpilation -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     
+    <!-- QR Code Generator Library -->
+    <script src="https://cdn.jsdelivr.net/npm/qrcode-generator/qrcode.js"></script>
+    
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -52,7 +55,11 @@
             signInWithEmailAndPassword, 
             signOut,
             sendPasswordResetEmail,
-            deleteUser
+            deleteUser,
+            multiFactor,
+            TotpMultiFactorGenerator,
+            TotpSecret,
+            getMultiFactorResolver
         } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-auth.js";
         import { 
             getFirestore, 
@@ -74,7 +81,7 @@
             orderBy
         } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore.js";
         import { getStorage, ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-storage.js";
-        import { getDatabase, ref as dbRef, onValue, onDisconnect, set as dbSet, serverTimestamp as rtdbServerTimestamp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-database.js";
+        import { getDatabase, ref as dbRef, onValue, onDisconnect, set as dbSet, serverTimestamp as rtdbServerTimestamp, remove } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-database.js";
 
 
         // Make Firebase services available globally for the Babel script
@@ -84,7 +91,8 @@
             sendPasswordResetEmail, deleteUser, getFirestore, doc, setDoc, getDoc,
             collection, onSnapshot, runTransaction, updateDoc, increment, addDoc,
             query, where, getDocs, serverTimestamp, writeBatch, deleteDoc, orderBy,
-            getStorage, ref, uploadBytes, getDownloadURL, getDatabase, dbRef, onValue, onDisconnect, dbSet, rtdbServerTimestamp
+            getStorage, ref, uploadBytes, getDownloadURL, getDatabase, dbRef, onValue, onDisconnect, dbSet, rtdbServerTimestamp,
+            multiFactor, TotpMultiFactorGenerator, TotpSecret, getMultiFactorResolver, remove
         };
     </script>
 
@@ -96,7 +104,8 @@
             sendPasswordResetEmail, deleteUser, getFirestore, doc, setDoc, getDoc,
             collection, onSnapshot, runTransaction, updateDoc, increment, addDoc,
             query, where, getDocs, serverTimestamp, writeBatch, deleteDoc, orderBy,
-            getStorage, ref, uploadBytes, getDownloadURL, getDatabase, dbRef, onValue, onDisconnect, dbSet, rtdbServerTimestamp
+            getStorage, ref, uploadBytes, getDownloadURL, getDatabase, dbRef, onValue, onDisconnect, dbSet, rtdbServerTimestamp,
+            multiFactor, TotpMultiFactorGenerator, TotpSecret, getMultiFactorResolver, remove
         } = window.firebaseServices;
 
         // --- MANUELLE FIREBASE KONFIGURATION ---
@@ -158,6 +167,7 @@
         const UserPlusIcon = () => <Icon path={<><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" x2="19" y1="8" y2="14"/><line x1="22" x2="16" y1="11" y2="11"/></>} />;
         const DownloadIcon = () => <Icon path={<><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></>} />;
         const CameraIcon = () => <Icon path={<><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></>} />;
+        const SettingsIcon = () => <Icon path={<><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 0 2l-.15.08a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1 0-2l.15-.08a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></>} />;
 
 
         // --- Hilfskomponenten & UI-Elemente ---
@@ -293,6 +303,8 @@
             const [successMessage, setSuccessMessage] = useState('');
             const [loading, setLoading] = useState(false);
             const [showPassword, setShowPassword] = useState(false);
+            const [mfaResolver, setMfaResolver] = useState(null);
+            const [verificationCode, setVerificationCode] = useState('');
 
             const resetForm = (newView = 'login') => {
                 if (newView !== 'completeRegistration') setEmail('');
@@ -301,6 +313,8 @@
                 setError('');
                 setSuccessMessage('');
                 setView(newView);
+                setMfaResolver(null);
+                setVerificationCode('');
             };
             
             const handleClose = () => {
@@ -334,7 +348,7 @@
                     transaction.set(userDocRef, {
                         uid: user.uid, email: user.email, username: chosenUsername, role,
                         createdAt: new Date(), isBanned: false, banCount: 0, bannedBy: null,
-                        photoURL: null // Hinzufügen des Profilbild-Feldes
+                        photoURL: null, has2FA: false
                     });
                 });
             };
@@ -370,14 +384,15 @@
 
                 if (view === 'login') {
                     try {
-                        const { user } = await signInWithEmailAndPassword(auth, email, password);
-                        const userDocSnap = await getDoc(doc(db, `artifacts/${appId}/public/data/users`, user.uid));
-                        if (!userDocSnap.exists()) {
-                            resetForm('completeRegistration'); setEmail(user.email); return;
-                        }
+                        await signInWithEmailAndPassword(auth, email, password);
                         handleClose();
                     } catch (err) {
-                        setError('Falsche E-Mail oder Passwort.');
+                        if (err.code === 'auth/multi-factor-required') {
+                            setMfaResolver(getMultiFactorResolver(auth, err));
+                            setView('mfa');
+                        } else {
+                            setError('Falsche E-Mail oder Passwort.');
+                        }
                     } finally {
                         setLoading(false);
                     }
@@ -405,8 +420,34 @@
                 }
             };
 
+            const handleMfaSignIn = async (e) => {
+                e.preventDefault();
+                setError('');
+                setLoading(true);
+                try {
+                    const cred = TotpMultiFactorGenerator.assertionForSignIn(
+                        mfaResolver.hints[0].uid,
+                        verificationCode
+                    );
+                    await mfaResolver.resolveSignIn(cred);
+                    handleClose();
+                } catch (error) {
+                    setError('Falscher Bestätigungscode.');
+                } finally {
+                    setLoading(false);
+                }
+            };
+
             const renderContent = () => {
                 switch (view) {
+                    case 'mfa': return (
+                        <form onSubmit={handleMfaSignIn} className="space-y-4">
+                            <p className="text-sm text-gray-300">Geben Sie den 6-stelligen Code aus Ihrer Authenticator-App ein.</p>
+                            <Input type="text" placeholder="Bestätigungscode" value={verificationCode} onChange={(e) => setVerificationCode(e.target.value)} required maxLength="6" />
+                            {error && <p className="text-red-400 text-sm">{error}</p>}
+                            <Button type="submit" className="w-full" disabled={loading}>{loading ? 'Überprüfe...' : 'Anmelden'}</Button>
+                        </form>
+                    );
                     case 'completeRegistration': return (
                         <form onSubmit={handleRegistrationCompletion} className="space-y-4">
                             <p className="text-sm text-gray-300">Willkommen! Bitte Benutzernamen eingeben.</p>
@@ -449,6 +490,7 @@
                     case 'register': return 'Registrieren';
                     case 'forgotPassword': return 'Passwort zurücksetzen';
                     case 'completeRegistration': return 'Registrierung abschließen';
+                    case 'mfa': return 'Zwei-Faktor-Authentifizierung';
                     default: return 'Anmelden';
                 }
             };
@@ -500,34 +542,29 @@
             };
 
             return (
-                <div className="fixed bottom-0 right-4 w-80 h-96 bg-gray-800 border-t-2 border-l-2 border-r-2 border-blue-500 rounded-t-lg flex flex-col shadow-2xl">
-                    <header className="bg-gray-900 p-2 flex justify-between items-center rounded-t-lg">
-                        <h3 className="font-bold text-white">{friend.username}</h3>
-                        <div>
-                            <button className="text-green-400 hover:text-green-300 mr-2"><PhoneIcon /></button>
-                            <button onClick={onClose} className="text-gray-400 hover:text-white"><XIcon /></button>
-                        </div>
-                    </header>
-                    <div className="flex-1 p-2 overflow-y-auto">
-                        {messages.map(msg => (
-                            <div key={msg.id} className={`flex ${msg.senderId === currentUser.uid ? 'justify-end' : 'justify-start'}`}>
-                                <div className={`max-w-xs rounded-lg px-3 py-2 my-1 ${msg.senderId === currentUser.uid ? 'bg-blue-600 text-white' : 'bg-gray-600 text-white'}`}>
-                                    <p className="text-sm">{msg.text}</p>
+                <Modal isOpen={true} onClose={onClose} title={`Chat mit ${friend.username}`}>
+                    <div className="h-80 flex flex-col">
+                        <div className="flex-1 p-2 overflow-y-auto">
+                            {messages.map(msg => (
+                                <div key={msg.id} className={`flex ${msg.senderId === currentUser.uid ? 'justify-end' : 'justify-start'}`}>
+                                    <div className={`max-w-xs rounded-lg px-3 py-2 my-1 ${msg.senderId === currentUser.uid ? 'bg-blue-600 text-white' : 'bg-gray-600 text-white'}`}>
+                                        <p className="text-sm">{msg.text}</p>
+                                    </div>
                                 </div>
-                            </div>
-                        ))}
-                        <div ref={chatEndRef} />
+                            ))}
+                            <div ref={chatEndRef} />
+                        </div>
+                        <form onSubmit={handleSendMessage} className="p-2 border-t border-gray-700 flex">
+                            <Input 
+                                value={newMessage}
+                                onChange={(e) => setNewMessage(e.target.value)}
+                                placeholder="Nachricht schreiben..."
+                                className="flex-1"
+                            />
+                            <Button type="submit" className="ml-2">Senden</Button>
+                        </form>
                     </div>
-                    <form onSubmit={handleSendMessage} className="p-2 border-t border-gray-700 flex">
-                        <Input 
-                            value={newMessage}
-                            onChange={(e) => setNewMessage(e.target.value)}
-                            placeholder="Nachricht schreiben..."
-                            className="flex-1"
-                        />
-                        <Button type="submit" className="ml-2">Senden</Button>
-                    </form>
-                </div>
+                </Modal>
             );
         };
 
@@ -886,6 +923,87 @@
                 </Modal>
             );
         };
+        
+        // --- Settings Modal ---
+        const SettingsModal = ({ isOpen, onClose, user, userData, setNotification }) => {
+            const [qrCode, setQrCode] = useState('');
+            const [verificationCode, setVerificationCode] = useState('');
+            const [mfaSecret, setMfaSecret] = useState(null);
+            const [error, setError] = useState('');
+
+            const handleEnable2FA = async () => {
+                try {
+                    const session = await multiFactor(user).getSession();
+                    const secret = await TotpMultiFactorGenerator.generateSecret(session);
+                    setMfaSecret(secret);
+                    const qrCodeUri = secret.toUri();
+                    
+                    const qr = qrcode(0, 'L');
+                    qr.addData(qrCodeUri);
+                    qr.make();
+                    setQrCode(qr.createDataURL(4));
+                } catch (e) {
+                    console.error("Fehler beim Erstellen des 2FA-Secrets:", e);
+                    setError("2FA konnte nicht initialisiert werden.");
+                }
+            };
+
+            const handleVerify2FA = async (e) => {
+                e.preventDefault();
+                setError('');
+                try {
+                    const multiFactorAssertion = TotpMultiFactorGenerator.assertionForEnrollment(mfaSecret, verificationCode);
+                    await multiFactor(user).enroll(multiFactorAssertion, "Mein 2FA-Gerät");
+                    
+                    const userDocRef = doc(db, `artifacts/${appId}/public/data/users`, user.uid);
+                    await updateDoc(userDocRef, { has2FA: true });
+                    
+                    setNotification({ type: 'success', message: '2FA erfolgreich aktiviert!' });
+                    onClose();
+                } catch (error) {
+                    console.error("Fehler bei der 2FA-Verifizierung:", error);
+                    setError("Falscher Code. Bitte erneut versuchen.");
+                }
+            };
+
+            return (
+                <Modal isOpen={isOpen} onClose={onClose} title="Einstellungen">
+                    <div className="space-y-4">
+                        <h3 className="font-bold text-lg">Zwei-Faktor-Authentifizierung (2FA)</h3>
+                        {userData?.has2FA ? (
+                            <div className="flex items-center gap-2 text-green-400">
+                                <ShieldCheckIcon />
+                                <span>2FA ist für Ihr Konto aktiv.</span>
+                            </div>
+                        ) : (
+                            <div>
+                                {!qrCode ? (
+                                    <Button onClick={handleEnable2FA}>2FA aktivieren</Button>
+                                ) : (
+                                    <form onSubmit={handleVerify2FA} className="space-y-4">
+                                        <p>1. Scannen Sie diesen QR-Code mit Ihrer Authenticator-App (z.B. Google Authenticator).</p>
+                                        <div className="bg-white p-2 rounded-lg inline-block">
+                                            <img src={qrCode} alt="QR Code" />
+                                        </div>
+                                        <p>2. Geben Sie den 6-stelligen Code aus der App ein, um die Einrichtung abzuschließen.</p>
+                                        <Input
+                                            type="text"
+                                            value={verificationCode}
+                                            onChange={(e) => setVerificationCode(e.target.value)}
+                                            placeholder="6-stelliger Code"
+                                            maxLength="6"
+                                            required
+                                        />
+                                        {error && <p className="text-red-400 text-sm">{error}</p>}
+                                        <Button type="submit">Aktivieren & Verifizieren</Button>
+                                    </form>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                </Modal>
+            );
+        };
 
         // --- Haupt-App-Komponente ---
         const App = () => {
@@ -898,6 +1016,7 @@
             const [isAdminPanelOpen, setAdminPanelOpen] = useState(false);
             const [isNotesModalOpen, setNotesModalOpen] = useState(false);
             const [isFriendsPanelOpen, setFriendsPanelOpen] = useState(false);
+            const [isSettingsModalOpen, setSettingsModalOpen] = useState(false);
             const [isDropdownOpen, setDropdownOpen] = useState(false);
             const [activeChat, setActiveChat] = useState(null);
             
@@ -915,6 +1034,9 @@
                 if (firebaseError) { setLoadingAuth(false); return; }
                 const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
                     setUser(currentUser || null);
+                    if (!currentUser) {
+                        setUserData(null);
+                    }
                     setLoadingAuth(false);
                 });
                 return () => unsubscribe();
@@ -924,7 +1046,13 @@
                 if (user) {
                     const userDocRef = doc(db, `artifacts/${appId}/public/data/users`, user.uid);
                     const unsubscribe = onSnapshot(userDocRef, (docSnap) => {
-                        setUserData(docSnap.exists() ? {...docSnap.data(), uid: user.uid} : null);
+                        if (docSnap.exists()) {
+                            setUserData({...docSnap.data(), uid: user.uid});
+                        } else if (auth.currentUser) {
+                            // User exists in Auth, but not Firestore. Trigger completion.
+                            setUserData(null); 
+                            setAuthModalOpen(true);
+                        }
                     }, (error) => {
                         console.error("Fehler beim Lauschen auf Benutzerdaten:", error);
                         setUserData(null);
@@ -963,22 +1091,13 @@
             }, [userData]);
 
             const handleLogout = async () => {
+                if (user) {
+                    const userStatusDatabaseRef = dbRef(rtdb, '/status/' + user.uid);
+                    await dbSet(userStatusDatabaseRef, { state: 'offline', last_changed: rtdbServerTimestamp() });
+                }
                 await signOut(auth);
                 setDropdownOpen(false);
                 setNotification({type: 'info', message: 'Erfolgreich abgemeldet.'});
-            };
-            
-            const handleDownload = () => {
-                const htmlContent = document.documentElement.outerHTML;
-                const blob = new Blob([htmlContent], { type: 'text/html' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = 'FortniteStatusApp.html';
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                URL.revokeObjectURL(url);
             };
 
             const handleProfilePictureChange = async (e) => {
@@ -1054,6 +1173,9 @@
                             {isDropdownOpen && user && userData && (
                                 <div className="absolute right-0 mt-2 w-56 bg-gray-800 rounded-lg shadow-xl z-20 border border-gray-700">
                                     <div className="p-2">
+                                        <button onClick={() => { setSettingsModalOpen(true); setDropdownOpen(false); }} className="w-full text-left px-4 py-2 text-sm text-white hover:bg-gray-700 rounded-md flex items-center gap-2">
+                                            <SettingsIcon className="w-4 h-4"/> Einstellungen
+                                        </button>
                                         <button onClick={() => fileInputRef.current.click()} className="w-full text-left px-4 py-2 text-sm text-white hover:bg-gray-700 rounded-md flex items-center gap-2">
                                             <CameraIcon className="w-4 h-4"/> Profilbild ändern
                                         </button>
@@ -1077,15 +1199,12 @@
                             <Card>
                                 <h2 className="text-xl font-bold mb-3">Willkommen!</h2>
                                 <p className="text-gray-300">Dies ist deine zentrale Anlaufstelle für den Fortnite-Status. Melde dich an, um Notizen zu erstellen, Freunde hinzuzufügen und mit ihnen zu chatten.</p>
-                                <Button onClick={handleDownload} variant="secondary" className="mt-4">
-                                    <DownloadIcon className="w-4 h-4" />
-                                    App herunterladen
-                                </Button>
                             </Card>
                         </div>
                     </main>
 
                     <AuthModal isOpen={isAuthModalOpen || (user && !userData)} onClose={() => setAuthModalOpen(false)} />
+                    {user && userData && <SettingsModal isOpen={isSettingsModalOpen} onClose={() => setSettingsModalOpen(false)} user={user} userData={userData} setNotification={setNotification}/>}
                     {userData && (userData.role === 'admin' || userData.role === 'founder') && <AdminPanel isOpen={isAdminPanelOpen} onClose={() => setAdminPanelOpen(false)} currentUserData={userData} allUsers={allUsers} setNotification={setNotification} />}
                     {user && userData && <NotesModal isOpen={isNotesModalOpen} onClose={() => setNotesModalOpen(false)} userId={user.uid} setNotification={setNotification} />}
                     {user && userData && <FriendsPanel isOpen={isFriendsPanelOpen} onClose={() => setFriendsPanelOpen(false)} currentUserData={userData} onChatStart={setActiveChat} setNotification={setNotification} />}

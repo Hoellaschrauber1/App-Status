@@ -190,7 +190,7 @@
         let currentUser = null;
         let currentUserProfile = null;
         let unsubscribeUserListener = null;
-        let isRegistering = false; // Flag to handle registration race condition
+        let isRegistering = false;
 
         // --- HELPER & MODAL FUNCTIONS ---
         const showLoader = (text = 'Lade...') => {
@@ -268,17 +268,19 @@
             if (isRegistering) { return; }
 
             if (user) {
-                if (!user.emailVerified) {
-                    renderVerificationScreen();
-                    return;
-                }
-                currentUser = user;
+                currentUser = user; 
                 if (unsubscribeUserListener) unsubscribeUserListener();
                 const userDocRef = doc(db, `users/${user.uid}`);
-                unsubscribeUserListener = onSnapshot(userDocRef, (docSnap) => {
+                unsubscribeUserListener = onSnapshot(userDocRef, async (docSnap) => {
                     if (docSnap.exists()) {
                         currentUserProfile = { id: docSnap.id, ...docSnap.data() };
-                        updateUIForLoggedInUser();
+                        if (currentUserProfile.banned) {
+                            await renderBannedScreen();
+                        } else if (!user.emailVerified) {
+                            renderVerificationScreen();
+                        } else {
+                            updateUIForLoggedInUser();
+                        }
                     } else {
                         if (currentUserProfile) {
                             console.error("User document was deleted. Logging out.");
@@ -383,13 +385,31 @@
             });
             document.getElementById('check-verification-btn').addEventListener('click', async () => {
                 await auth.currentUser.reload();
-                if(auth.currentUser.emailVerified) {
-                    showToast("Konto erfolgreich verifiziert!", "success");
-                    onAuthStateChanged(auth, () => {}); // Re-trigger auth state check
-                } else {
-                    showToast("E-Mail noch nicht verifiziert. Bitte überprüfe dein Postfach.", "info");
-                }
             });
+        };
+        
+        const renderBannedScreen = async () => {
+            headerTitle.textContent = 'Konto gesperrt';
+            headerActions.innerHTML = `<button id="logout-btn" class="btn-secondary">Abmelden</button>`;
+            document.getElementById('logout-btn').addEventListener('click', handleLogout);
+            
+            let bannerName = 'einem Administrator';
+            if (currentUserProfile.bannedBy) {
+                const bannerDoc = await getDoc(doc(db, 'users', currentUserProfile.bannedBy));
+                if (bannerDoc.exists()) {
+                    bannerName = bannerDoc.data().displayName;
+                }
+            }
+
+            mainContent.innerHTML = `
+            <div class="w-full max-w-2xl space-y-6 mx-auto text-center">
+                <div class="glass-card p-8">
+                    <i data-lucide="gavel" class="w-16 h-16 mx-auto text-red-500 mb-4"></i>
+                    <h2 class="text-2xl font-bold">Dein Konto wurde gesperrt</h2>
+                    <p class="text-gray-400 mt-2">Du wurdest von <strong>${bannerName}</strong> gesperrt. Du hast keinen Zugriff auf die App-Funktionen.</p>
+                </div>
+            </div>`;
+            lucide.createIcons();
         };
 
         const showAuthModal = (view = 'login') => {
@@ -430,7 +450,6 @@
             try {
                 await signInWithEmailAndPassword(auth, email, password);
                 closeModal(authModal);
-                // onAuthStateChanged will handle the rest
             } catch (error) {
                 if (error.code === 'auth/user-not-found' || error.code === 'auth/invalid-credential') {
                     showToast('Für diese E-Mail-Adresse wurde kein Konto gefunden.', 'error');
@@ -468,7 +487,7 @@
 
                 await updateProfile(tempUser, { displayName });
                 const userDocRef = doc(db, `users/${tempUser.uid}`);
-                await setDoc(userDocRef, { uid: tempUser.uid, displayName, email, role, createdAt: serverTimestamp(), photoURL: '', friends: [], banned: false });
+                await setDoc(userDocRef, { uid: tempUser.uid, displayName, email, role, createdAt: serverTimestamp(), photoURL: '', friends: [], banned: false, banCount: 0, bannedBy: null });
                 
                 if (isFounder) {
                     await setDoc(metadataRef, { founderId: tempUser.uid });
@@ -619,7 +638,6 @@
                 const videoFile = document.getElementById('video-upload-input').files[0];
                 if (!title || !thumbnailFile || !videoFile) { showToast("Bitte alle Felder ausfüllen.", "error"); return; }
                 
-                // --- PROGRESS BAR UI ---
                 modalContent.innerHTML = `
                     <div id="upload-progress-container">
                         <p id="upload-status-text" class="text-center mb-2">Lade Vorschaubild hoch...</p>
@@ -914,19 +932,85 @@
             modalContent.innerHTML = '<div class="loader"></div>';
             modalFooter.innerHTML = '';
             openModal(genericModal);
+            
             const usersRef = collection(db, "users");
-            const querySnapshot = await getDocs(usersRef);
-            const userListHtml = querySnapshot.docs.map(doc => {
-                const user = {id: doc.id, ...doc.data()};
-                if (user.id === currentUser.uid) return '';
-                return `<tr class="border-b border-slate-700 hover:bg-slate-800/50"><td class="p-3 flex items-center gap-3"><img src="${user.photoURL || `https://placehold.co/40x40/1E293B/FFFFFF?text=${user.displayName.charAt(0)}`}" class="w-10 h-10 rounded-full object-cover"><div><p class="font-semibold text-white">${user.displayName}</p><p class="text-xs text-gray-500">${user.email}</p></div></td><td class="p-3"><select data-id="${user.id}" class="role-select bg-slate-700 rounded p-1" ${currentUserProfile.role !== 'founder' ? 'disabled' : ''}><option value="user" ${user.role === 'user' ? 'selected' : ''}>User</option><option value="mod" ${user.role === 'mod' ? 'selected' : ''}>Mod</option><option value="admin" ${user.role === 'admin' ? 'selected' : ''}>Admin</option></select></td><td class="p-3"><button data-id="${user.id}" class="ban-user-btn btn-secondary bg-red-700 hover:bg-red-600 text-sm" ${user.banned ? 'disabled' : ''}>${user.banned ? 'Gesperrt' : 'Sperren'}</button></td></tr>`;
-            }).join('');
-            modalContent.innerHTML = `<div class="overflow-x-auto"><table class="w-full text-left"><thead><tr class="border-b border-gray-600"><th class="p-3">User</th><th class="p-3">Rolle</th><th class="p-3">Aktion</th></tr></thead><tbody>${userListHtml}</tbody></table></div>`;
-            document.querySelectorAll('.role-select').forEach(select => { select.onchange = async (e) => { await updateUserRole(e.target.dataset.id, e.target.value); }; });
-            document.querySelectorAll('.ban-user-btn').forEach(btn => { btn.onclick = async (e) => { await banUser(e.target.dataset.id, e.target); }; });
+            onSnapshot(usersRef, (querySnapshot) => {
+                let userCardsHtml = '';
+                querySnapshot.forEach(doc => {
+                    const user = {id: doc.id, ...doc.data()};
+                    if (user.id === currentUser.uid) return;
+                    
+                    const crownIcon = user.role === 'founder' || user.role === 'admin' ? `<i data-lucide="crown" class="w-5 h-5 text-yellow-400"></i>` : '';
+                    userCardsHtml += `
+                        <div class="glass-card p-4 rounded-lg">
+                            <div class="flex justify-between items-start">
+                                <div class="flex items-center gap-3">
+                                    <img src="${user.photoURL || `https://placehold.co/48x48/1E293B/FFFFFF?text=${user.displayName.charAt(0)}`}" class="w-12 h-12 rounded-full object-cover">
+                                    <div>
+                                        <p class="font-bold text-lg flex items-center gap-2">${user.displayName} ${crownIcon}</p>
+                                        <p class="text-sm text-gray-400">${user.email}</p>
+                                    </div>
+                                </div>
+                                <div class="text-right">
+                                    <p class="text-sm text-gray-400">Bans: ${user.banCount || 0}</p>
+                                    <img src="https://placehold.co/24x24/1E293B/FFFFFF?text=${user.id.slice(0,1)}" class="w-6 h-6 rounded-full inline-block mt-1" title="User ID: ${user.id}">
+                                </div>
+                            </div>
+                            <div class="mt-4 pt-4 border-t border-slate-700 flex gap-2">
+                                <button data-id="${user.id}" data-role="${user.role}" class="toggle-admin-btn btn-secondary text-sm flex-grow ${currentUserProfile.role !== 'founder' ? 'opacity-50 cursor-not-allowed' : ''}" ${currentUserProfile.role !== 'founder' ? 'disabled' : ''}>
+                                    ${user.role === 'admin' ? 'Admin entfernen' : 'Admin geben'}
+                                </button>
+                                <button data-id="${user.id}" data-banned="${user.banned}" class="toggle-ban-btn ${user.banned ? 'bg-green-600 hover:bg-green-500' : 'bg-red-600 hover:bg-red-500'} text-white font-bold py-2 px-4 rounded-lg text-sm flex-grow">
+                                    ${user.banned ? 'Entsperren' : 'Sperren'}
+                                </button>
+                            </div>
+                        </div>
+                    `;
+                });
+                modalContent.innerHTML = `<div class="space-y-4">${userCardsHtml}</div>`;
+                lucide.createIcons();
+                document.querySelectorAll('.toggle-admin-btn').forEach(btn => { btn.onclick = (e) => toggleAdminRole(e.currentTarget.dataset.id, e.currentTarget.dataset.role); });
+                document.querySelectorAll('.toggle-ban-btn').forEach(btn => { btn.onclick = (e) => toggleBanStatus(e.currentTarget.dataset.id, e.currentTarget.dataset.banned === 'true'); });
+            });
         };
-        const updateUserRole = async (userId, newRole) => { if (currentUserProfile.role !== 'founder') { showToast('Nur der Gründer kann Rollen ändern.', 'error'); return; } showLoader('Rolle wird aktualisiert...'); try { const userRef = doc(db, `users/${userId}`); await updateDoc(userRef, { role: newRole }); showToast('Benutzerrolle aktualisiert.', 'success'); } catch (error) { showToast(`Fehler: ${error.message}`, 'error'); } finally { hideLoader(); } };
-        const banUser = async (userId, buttonElement) => { if (currentUserProfile.role !== 'founder' && currentUserProfile.role !== 'admin') { showToast('Keine Berechtigung zum Sperren von Benutzern.', 'error'); return; } showLoader('Benutzer wird gesperrt...'); try { const userRef = doc(db, `users/${userId}`); await updateDoc(userRef, { banned: true }); showToast('Benutzer wurde gesperrt.', 'success'); buttonElement.textContent = 'Gesperrt'; buttonElement.disabled = true; } catch (error) { showToast(`Fehler: ${error.message}`, 'error'); } finally { hideLoader(); } };
+        
+        const toggleAdminRole = async (userId, currentRole) => {
+            if (currentUserProfile.role !== 'founder') { showToast('Nur der Gründer kann Rollen ändern.', 'error'); return; }
+            const newRole = currentRole === 'admin' ? 'user' : 'admin';
+            showLoader('Rolle wird aktualisiert...');
+            try {
+                const userRef = doc(db, `users/${userId}`);
+                await updateDoc(userRef, { role: newRole });
+                showToast('Benutzerrolle aktualisiert.', 'success');
+            } catch (error) {
+                showToast(`Fehler: ${error.message}`, 'error');
+            } finally {
+                hideLoader();
+            }
+        };
+
+        const toggleBanStatus = async (userId, isCurrentlyBanned) => {
+            const userRef = doc(db, `users/${userId}`);
+            if (isCurrentlyBanned) {
+                // Unban logic
+                showLoader('Benutzer wird entsperrt...');
+                try {
+                    await updateDoc(userRef, { banned: false, bannedBy: null });
+                    showToast('Benutzer wurde entsperrt.', 'success');
+                } catch (error) { showToast(`Fehler: ${error.message}`, 'error'); } finally { hideLoader(); }
+            } else {
+                // Ban logic
+                showLoader('Benutzer wird gesperrt...');
+                try {
+                    await updateDoc(userRef, { 
+                        banned: true,
+                        bannedBy: currentUser.uid,
+                        banCount: increment(1)
+                    });
+                    showToast('Benutzer wurde gesperrt.', 'success');
+                } catch (error) { showToast(`Fehler: ${error.message}`, 'error'); } finally { hideLoader(); }
+            }
+        };
 
         // --- INITIALIZATION ---
         window.onload = () => {

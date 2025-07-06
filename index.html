@@ -5,15 +5,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Fortnite Status App</title>
     
+    <!-- Tailwind CSS for styling -->
     <script src="https://cdn.tailwindcss.com"></script>
     
+    <!-- React Libraries -->
     <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     
+    <!-- Babel for JSX transpilation -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     
+    <!-- QR Code Generator Library -->
     <script src="https://cdn.jsdelivr.net/npm/qrcode-generator/qrcode.js"></script>
     
+    <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -22,23 +27,37 @@
         body {
             font-family: 'Inter', sans-serif;
             background-color: #111827; /* bg-gray-900 */
+            color: #f9fafb; /* text-gray-50 */
         }
         .animate-spin {
             animation: spin 1s linear infinite;
         }
         @keyframes spin {
-            from {
-                transform: rotate(0deg);
-            }
-            to {
-                transform: rotate(360deg);
-            }
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+        /* Styling für das Canvas-Element im Hintergrund */
+        #background-canvas {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: -1; /* Stellt sicher, dass das Canvas hinter allem anderen liegt */
+        }
+        /* Stellt sicher, dass der Hauptinhalt über dem Canvas liegt */
+        #root {
+            position: relative;
+            z-index: 1;
         }
     </style>
 </head>
 <body>
+    <!-- Das Canvas-Element für den animierten Hintergrund -->
+    <canvas id="background-canvas"></canvas>
     <div id="root"></div>
 
+    <!-- Firebase SDKs (ESM version) -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js";
         import { getAnalytics } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-analytics.js";
@@ -162,6 +181,97 @@
         const DownloadIcon = () => <Icon path={<><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></>} />;
         const CameraIcon = () => <Icon path={<><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></>} />;
         const SettingsIcon = () => <Icon path={<><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 0 2l-.15.08a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1 0 2l.15-.08a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></>} />;
+
+        // --- NEUE KOMPONENTE: Animierter Canvas-Hintergrund ---
+        const AnimatedBackground = () => {
+            const canvasRef = useRef(null);
+
+            useEffect(() => {
+                // Das Canvas-Element und seinen 2D-Kontext abrufen.
+                const canvas = document.getElementById('background-canvas');
+                const ctx = canvas.getContext('2d');
+                let animationFrameId;
+
+                // Array zum Speichern der Sterne.
+                let stars = [];
+                const numStars = 200; // Anzahl der Sterne
+
+                // Funktion zum Einstellen der Canvas-Größe.
+                const setCanvasSize = () => {
+                    canvas.width = window.innerWidth;
+                    canvas.height = window.innerHeight;
+                };
+
+                // Sterne initialisieren.
+                const initStars = () => {
+                    stars = [];
+                    for (let i = 0; i < numStars; i++) {
+                        stars.push({
+                            x: Math.random() * canvas.width,
+                            y: Math.random() * canvas.height,
+                            radius: Math.random() * 1.5 + 0.5, // Zufälliger Radius
+                            speed: Math.random() * 0.5 + 0.2,   // Zufällige Geschwindigkeit
+                            alpha: Math.random() * 0.8 + 0.2    // Zufällige Transparenz
+                        });
+                    }
+                };
+
+                // Funktion zum Zeichnen der Sterne.
+                const drawStars = () => {
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    ctx.fillStyle = '#111827'; // Hintergrundfarbe passend zum Body
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                    stars.forEach(star => {
+                        ctx.beginPath();
+                        ctx.arc(star.x, star.y, star.radius, 0, Math.PI * 2);
+                        ctx.fillStyle = `rgba(255, 255, 255, ${star.alpha})`;
+                        ctx.fill();
+                    });
+                };
+
+                // Funktion zum Aktualisieren der Sternenpositionen.
+                const updateStars = () => {
+                    stars.forEach(star => {
+                        star.y += star.speed;
+                        // Wenn ein Stern den unteren Bildschirmrand erreicht, wird er oben neu positioniert.
+                        if (star.y > canvas.height + star.radius) {
+                            star.y = -star.radius;
+                            star.x = Math.random() * canvas.width;
+                        }
+                    });
+                };
+
+                // Die Haupt-Animationsschleife.
+                const animate = () => {
+                    updateStars();
+                    drawStars();
+                    animationFrameId = requestAnimationFrame(animate);
+                };
+
+                // Event-Listener für die Größenänderung des Fensters.
+                const handleResize = () => {
+                    setCanvasSize();
+                    initStars(); // Sterne neu initialisieren, um sie an die neue Größe anzupassen.
+                };
+
+                // Initialisierung
+                setCanvasSize();
+                initStars();
+                animate();
+                
+                window.addEventListener('resize', handleResize);
+
+                // Cleanup-Funktion: Animation stoppen und Event-Listener entfernen.
+                return () => {
+                    cancelAnimationFrame(animationFrameId);
+                    window.removeEventListener('resize', handleResize);
+                };
+            }, []);
+
+            // Diese Komponente rendert kein sichtbares HTML, sie steuert nur das Canvas.
+            return null;
+        };
 
 
         // --- Hilfskomponenten & UI-Elemente ---
@@ -1043,7 +1153,6 @@
                         if (docSnap.exists()) {
                             setUserData({...docSnap.data(), uid: user.uid});
                         } else if (auth.currentUser) {
-                            // User exists in Auth, but not Firestore. Trigger completion.
                             setUserData(null); 
                             setAuthModalOpen(true);
                         }
@@ -1052,7 +1161,6 @@
                         setUserData(null);
                     });
                     
-                    // Setup presence system
                     const userStatusDatabaseRef = dbRef(rtdb, '/status/' + user.uid);
                     const isOfflineForDatabase = { state: 'offline', last_changed: rtdbServerTimestamp() };
                     const isOnlineForDatabase = { state: 'online', last_changed: rtdbServerTimestamp() };
@@ -1084,29 +1192,16 @@
                 }
             }, [userData]);
 
-            // =================================================================
-            // === HIER IST DIE KORRIGIERTE FUNKTION ===
-            // =================================================================
             const handleLogout = async () => {
-                // Das Dropdown-Menü sofort schließen, um dem Benutzer direktes Feedback zu geben.
                 setDropdownOpen(false);
-
                 try {
-                    // Den Online-Status des Benutzers in der Datenbank aktualisieren.
-                    // Wir müssen hier nicht auf den Abschluss warten (fire and forget).
                     if (user) {
                         const userStatusDatabaseRef = dbRef(rtdb, '/status/' + user.uid);
                         dbSet(userStatusDatabaseRef, { state: 'offline', last_changed: rtdbServerTimestamp() });
                     }
-
-                    // Den Benutzer bei Firebase ausloggen.
                     await signOut(auth);
-
-                    // Eine Erfolgsmeldung anzeigen.
                     setNotification({type: 'info', message: 'Erfolgreich abgemeldet.'});
-
                 } catch (error) {
-                    // Fehler beim Abmelden abfangen und eine Fehlermeldung anzeigen.
                     console.error("Fehler beim Abmelden:", error);
                     setNotification({type: 'error', message: 'Abmelden fehlgeschlagen.'});
                 }
@@ -1151,7 +1246,10 @@
             }
 
             return (
-                <div className="bg-gray-900 min-h-screen text-white font-sans">
+                <div className="min-h-screen font-sans">
+                    {/* Die AnimatedBackground Komponente wird hier gerendert, um die Animation zu starten */}
+                    <AnimatedBackground />
+
                     {notification && (
                         <div className="fixed top-5 right-5 z-50">
                              <div className={`flex items-center gap-3 p-4 rounded-lg shadow-lg text-white ${notification.type === 'success' ? 'bg-green-600' : (notification.type === 'error' ? 'bg-red-600' : 'bg-blue-600')}`}>
@@ -1164,7 +1262,7 @@
                         </div>
                     )}
 
-                    <header className="p-4 flex justify-between items-center border-b border-gray-800">
+                    <header className="relative z-30 p-4 flex justify-between items-center border-b border-gray-800 bg-gray-900 bg-opacity-50 backdrop-blur-sm">
                         <h1 className="text-2xl font-bold text-white">Fortnite Status</h1>
                         <div className="relative">
                             {user && userData ? (

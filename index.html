@@ -5,8 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Fortnite Status & Community Hub</title>
     
+    <!-- Tailwind CSS for modern styling -->
     <script src="https://cdn.tailwindcss.com"></script>
     
+    <!-- Google Fonts & Icons -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet">
@@ -68,20 +70,27 @@
 
     <div class="stars"></div>
 
+    <!-- Main Application Container -->
     <div id="app-container" class="w-full h-full flex flex-col">
         
+        <!-- Header -->
         <header class="w-full p-4 flex justify-between items-center">
             <h1 id="header-title" class="text-xl font-bold text-white">Fortnite Status</h1>
             <div id="header-actions" class="flex items-center gap-4">
-                </div>
+                <!-- Logged in actions will be injected here -->
+            </div>
         </header>
 
+        <!-- Main Content Area -->
         <main id="main-content" class="flex-grow flex flex-col p-4 overflow-y-auto">
-            </main>
+            <!-- Content is rendered dynamically by JS -->
+        </main>
     </div>
 
+    <!-- Modals -->
     <div id="modal-backdrop" class="hidden fixed inset-0 bg-black/50 z-40"></div>
     
+    <!-- Auth Modal -->
     <div id="auth-modal" class="hidden fixed inset-0 flex items-center justify-center z-50 p-4 modal-enter">
         <div class="glass-card w-full max-w-md p-8 shadow-2xl">
             <div class="flex justify-between items-center mb-6">
@@ -92,6 +101,7 @@
         </div>
     </div>
 
+    <!-- Chats & Friends Modal -->
     <div id="chats-friends-modal" class="hidden fixed inset-0 flex items-center justify-center z-50 p-4 modal-enter">
         <div class="glass-card w-full max-w-2xl h-[70vh] flex flex-col p-6 shadow-2xl">
             <div class="flex justify-between items-center mb-4">
@@ -108,6 +118,7 @@
         </div>
     </div>
     
+    <!-- Other Modals (Notes, Settings, Profile Pic, Admin, Video Player) will use this generic structure -->
     <div id="generic-modal" class="hidden fixed inset-0 flex items-center justify-center z-50 p-4 modal-enter">
         <div class="glass-card w-full max-w-4xl h-auto max-h-[90vh] flex flex-col p-6 shadow-2xl">
             <div class="flex justify-between items-center mb-4 pb-4 border-b border-slate-700">
@@ -119,17 +130,20 @@
         </div>
     </div>
 
+    <!-- Loading Overlay -->
     <div id="loading-overlay" class="hidden fixed inset-0 bg-black/70 z-[100] flex flex-col items-center justify-center">
         <div class="loader"></div>
         <p id="loading-text" class="text-white mt-4 text-lg">Lade...</p>
     </div>
 
+    <!-- Custom Toast Notification -->
     <div id="toast" class="hidden fixed bottom-5 right-5 glass-card p-4 rounded-lg shadow-lg z-[101] flex items-center gap-3">
         <i id="toast-icon" data-lucide="check-circle" class="text-green-400"></i>
         <p id="toast-message"></p>
     </div>
 
 
+    <!-- Firebase SDKs -->
     <script type="module">
         // Import Firebase modules
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";

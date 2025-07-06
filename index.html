@@ -941,6 +941,21 @@
                     if (user.id === currentUser.uid) return;
                     
                     const crownIcon = user.role === 'founder' || user.role === 'admin' ? `<i data-lucide="crown" class="w-5 h-5 text-yellow-400"></i>` : '';
+                    
+                    let adminButtonHtml = '';
+                    if (user.role === 'founder') {
+                        adminButtonHtml = `<button class="btn-secondary text-sm flex-grow opacity-50 cursor-not-allowed" disabled>Gründer</button>`;
+                    } else {
+                        adminButtonHtml = `<button data-id="${user.id}" data-role="${user.role}" class="toggle-admin-btn btn-secondary text-sm flex-grow ${currentUserProfile.role !== 'founder' ? 'opacity-50 cursor-not-allowed' : ''}" ${currentUserProfile.role !== 'founder' ? 'disabled' : ''}>${user.role === 'admin' ? 'Admin entfernen' : 'Admin geben'}</button>`;
+                    }
+
+                    let banButtonHtml = '';
+                    if (user.role === 'founder') {
+                        banButtonHtml = `<button class="bg-slate-800 text-gray-500 font-bold py-2 px-4 rounded-lg text-sm flex-grow cursor-not-allowed" disabled>Unantastbar</button>`;
+                    } else {
+                        banButtonHtml = `<button data-id="${user.id}" data-banned="${user.banned}" class="toggle-ban-btn ${user.banned ? 'bg-green-600 hover:bg-green-500' : 'bg-red-600 hover:bg-red-500'} text-white font-bold py-2 px-4 rounded-lg text-sm flex-grow">${user.banned ? 'Entsperren' : 'Sperren'}</button>`;
+                    }
+
                     userCardsHtml += `
                         <div class="glass-card p-4 rounded-lg">
                             <div class="flex justify-between items-start">
@@ -957,12 +972,8 @@
                                 </div>
                             </div>
                             <div class="mt-4 pt-4 border-t border-slate-700 flex gap-2">
-                                <button data-id="${user.id}" data-role="${user.role}" class="toggle-admin-btn btn-secondary text-sm flex-grow ${currentUserProfile.role !== 'founder' ? 'opacity-50 cursor-not-allowed' : ''}" ${currentUserProfile.role !== 'founder' ? 'disabled' : ''}>
-                                    ${user.role === 'admin' ? 'Admin entfernen' : 'Admin geben'}
-                                </button>
-                                <button data-id="${user.id}" data-banned="${user.banned}" class="toggle-ban-btn ${user.banned ? 'bg-green-600 hover:bg-green-500' : 'bg-red-600 hover:bg-red-500'} text-white font-bold py-2 px-4 rounded-lg text-sm flex-grow">
-                                    ${user.banned ? 'Entsperren' : 'Sperren'}
-                                </button>
+                                ${adminButtonHtml}
+                                ${banButtonHtml}
                             </div>
                         </div>
                     `;
@@ -990,19 +1001,23 @@
         };
 
         const toggleBanStatus = async (userId, isCurrentlyBanned) => {
-            const userRef = doc(db, `users/${userId}`);
+            const userToModifyRef = doc(db, "users", userId);
+            const userToModifySnap = await getDoc(userToModifyRef);
+            if (userToModifySnap.exists() && userToModifySnap.data().role === 'founder') {
+                showToast("Der Gründer kann nicht gesperrt werden.", "error");
+                return;
+            }
+
             if (isCurrentlyBanned) {
-                // Unban logic
                 showLoader('Benutzer wird entsperrt...');
                 try {
-                    await updateDoc(userRef, { banned: false, bannedBy: null });
+                    await updateDoc(userToModifyRef, { banned: false, bannedBy: null });
                     showToast('Benutzer wurde entsperrt.', 'success');
                 } catch (error) { showToast(`Fehler: ${error.message}`, 'error'); } finally { hideLoader(); }
             } else {
-                // Ban logic
                 showLoader('Benutzer wird gesperrt...');
                 try {
-                    await updateDoc(userRef, { 
+                    await updateDoc(userToModifyRef, { 
                         banned: true,
                         bannedBy: currentUser.uid,
                         banCount: increment(1)

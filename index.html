@@ -147,8 +147,8 @@
     <script type="module">
         // Import Firebase modules
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getStorage, ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
-        import { getAuth, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, updateProfile } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getStorage, ref, getDownloadURL, uploadBytesResumable } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
+        import { getAuth, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, updateProfile, deleteUser, sendEmailVerification } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, getDoc, getDocs, collection, writeBatch, serverTimestamp, query, where, onSnapshot, updateDoc, arrayUnion, arrayRemove, addDoc, orderBy, deleteDoc, increment } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // --- FIREBASE CONFIGURATION ---
@@ -190,6 +190,7 @@
         let currentUser = null;
         let currentUserProfile = null;
         let unsubscribeUserListener = null;
+        let isRegistering = false; // Flag to handle registration race condition
 
         // --- HELPER & MODAL FUNCTIONS ---
         const showLoader = (text = 'Lade...') => {
@@ -264,7 +265,13 @@
         };
 
         onAuthStateChanged(auth, async (user) => {
+            if (isRegistering) { return; }
+
             if (user) {
+                if (!user.emailVerified) {
+                    renderVerificationScreen();
+                    return;
+                }
                 currentUser = user;
                 if (unsubscribeUserListener) unsubscribeUserListener();
                 const userDocRef = doc(db, `users/${user.uid}`);
@@ -273,12 +280,15 @@
                         currentUserProfile = { id: docSnap.id, ...docSnap.data() };
                         updateUIForLoggedInUser();
                     } else {
-                        handleLogout();
+                        if (currentUserProfile) {
+                            console.error("User document was deleted. Logging out.");
+                            handleLogout();
+                        }
                     }
                 });
             } else {
                 currentUser = null;
-                currentUserProfile = null;
+                currentUserProfile = null; 
                 if (unsubscribeUserListener) unsubscribeUserListener();
                 updateUIForLoggedOutUser();
             }
@@ -312,7 +322,7 @@
                 document.getElementById('admin-panel-btn').addEventListener('click', showAdminPanel);
             }
             lucide.createIcons();
-            renderVideoFeedView(); // Render the new main view
+            renderVideoFeedView();
         };
 
         const updateUIForLoggedOutUser = () => {
@@ -320,7 +330,7 @@
             headerActions.innerHTML = `<button id="profile-button-logged-out" class="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center hover:bg-slate-600"><i data-lucide="user" class="w-6 h-6 text-gray-400"></i></button>`;
             document.getElementById('profile-button-logged-out').addEventListener('click', () => showAuthModal('login'));
             lucide.createIcons();
-            renderLoggedOutView(); // Render the default logged-out view
+            renderLoggedOutView();
         };
         
         const renderLoggedOutView = () => {
@@ -342,6 +352,44 @@
                 </div>
             </div>`;
             lucide.createIcons();
+        };
+
+        const renderVerificationScreen = () => {
+            headerTitle.textContent = 'E-Mail Bestätigung';
+            headerActions.innerHTML = `<button id="logout-btn" class="btn-secondary">Abmelden</button>`;
+            document.getElementById('logout-btn').addEventListener('click', handleLogout);
+
+            mainContent.innerHTML = `
+            <div class="w-full max-w-2xl space-y-6 mx-auto text-center">
+                <div class="glass-card p-8">
+                    <i data-lucide="mail-check" class="w-16 h-16 mx-auto text-blue-400 mb-4"></i>
+                    <h2 class="text-2xl font-bold">Bestätige deine E-Mail-Adresse</h2>
+                    <p class="text-gray-400 mt-2 mb-6">Wir haben eine Bestätigungs-E-Mail an <strong>${auth.currentUser.email}</strong> gesendet. Bitte klicke auf den Link in der E-Mail, um dein Konto zu aktivieren.</p>
+                    <div class="flex flex-col sm:flex-row gap-4 justify-center">
+                        <button id="resend-verification-btn" class="btn-primary">E-Mail erneut senden</button>
+                        <button id="check-verification-btn" class="btn-secondary">Ich habe verifiziert, weiter</button>
+                    </div>
+                </div>
+            </div>`;
+            lucide.createIcons();
+
+            document.getElementById('resend-verification-btn').addEventListener('click', async () => {
+                try {
+                    await sendEmailVerification(auth.currentUser);
+                    showToast("Bestätigungs-E-Mail wurde erneut gesendet.", "success");
+                } catch (error) {
+                    showToast("Fehler beim Senden der E-Mail.", "error");
+                }
+            });
+            document.getElementById('check-verification-btn').addEventListener('click', async () => {
+                await auth.currentUser.reload();
+                if(auth.currentUser.emailVerified) {
+                    showToast("Konto erfolgreich verifiziert!", "success");
+                    onAuthStateChanged(auth, () => {}); // Re-trigger auth state check
+                } else {
+                    showToast("E-Mail noch nicht verifiziert. Bitte überprüfe dein Postfach.", "info");
+                }
+            });
         };
 
         const showAuthModal = (view = 'login') => {
@@ -374,8 +422,78 @@
             openModal(authModal);
         };
 
-        const handleLogin = async (e) => { e.preventDefault(); showLoader('Anmelden...'); const email = document.getElementById('login-email').value; const password = document.getElementById('login-password').value; try { await signInWithEmailAndPassword(auth, email, password); showToast('Willkommen zurück!', 'success'); closeModal(authModal); } catch (error) { showToast(`Fehler bei der Anmeldung: ${error.message}`, 'error'); } finally { hideLoader(); } };
-        const handleRegister = async (e) => { e.preventDefault(); showLoader('Konto wird erstellt...'); const displayName = document.getElementById('register-displayname').value; const email = document.getElementById('register-email').value; const password = document.getElementById('register-password').value; if (displayName.length < 3) { showToast('Anzeigename muss mindestens 3 Zeichen lang sein.', 'error'); hideLoader(); return; } try { const metadataRef = doc(db, `app-metadata/${appId}`); const metadataSnap = await getDoc(metadataRef); let role = 'user'; let isFounder = false; if (!metadataSnap.exists() || !metadataSnap.data().founderId) { role = 'founder'; isFounder = true; } const userCredential = await createUserWithEmailAndPassword(auth, email, password); const user = userCredential.user; await updateProfile(user, { displayName }); const userDocRef = doc(db, `users/${user.uid}`); await setDoc(userDocRef, { uid: user.uid, displayName, email, role, createdAt: serverTimestamp(), photoURL: '', friends: [], banned: false }); if (isFounder) { await setDoc(metadataRef, { founderId: user.uid }); } showToast('Konto erfolgreich erstellt! Willkommen!', 'success'); closeModal(authModal); } catch (error) { showToast(`Fehler bei der Registrierung: ${error.message}`, 'error'); } finally { hideLoader(); } };
+        const handleLogin = async (e) => {
+            e.preventDefault();
+            showLoader('Anmelden...');
+            const email = document.getElementById('login-email').value;
+            const password = document.getElementById('login-password').value;
+            try {
+                await signInWithEmailAndPassword(auth, email, password);
+                closeModal(authModal);
+                // onAuthStateChanged will handle the rest
+            } catch (error) {
+                if (error.code === 'auth/user-not-found' || error.code === 'auth/invalid-credential') {
+                    showToast('Für diese E-Mail-Adresse wurde kein Konto gefunden.', 'error');
+                } else if (error.code === 'auth/wrong-password') {
+                    showToast('Falsches Passwort. Bitte versuche es erneut.', 'error');
+                } else {
+                    showToast(`Fehler bei der Anmeldung: ${error.message}`, 'error');
+                }
+            } finally {
+                hideLoader();
+            }
+        };
+        const handleRegister = async (e) => {
+            e.preventDefault();
+            showLoader('Konto wird erstellt...');
+            const displayName = document.getElementById('register-displayname').value;
+            const email = document.getElementById('register-email').value;
+            const password = document.getElementById('register-password').value;
+            if (displayName.length < 3) { showToast('Anzeigename muss mindestens 3 Zeichen lang sein.', 'error'); hideLoader(); return; }
+            
+            isRegistering = true;
+            let tempUser = null; 
+
+            try {
+                const metadataRef = doc(db, `app-metadata/${appId}`);
+                const metadataSnap = await getDoc(metadataRef);
+                let role = 'user';
+                let isFounder = false;
+                if (!metadataSnap.exists() || !metadataSnap.data().founderId) {
+                    role = 'founder';
+                    isFounder = true;
+                }
+                const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+                tempUser = userCredential.user; 
+
+                await updateProfile(tempUser, { displayName });
+                const userDocRef = doc(db, `users/${tempUser.uid}`);
+                await setDoc(userDocRef, { uid: tempUser.uid, displayName, email, role, createdAt: serverTimestamp(), photoURL: '', friends: [], banned: false });
+                
+                if (isFounder) {
+                    await setDoc(metadataRef, { founderId: tempUser.uid });
+                }
+                
+                await sendEmailVerification(tempUser);
+                showToast('Registrierung erfolgreich! Bitte überprüfe dein Postfach zur Verifizierung.', 'success');
+                closeModal(authModal);
+            } catch (error) {
+                if (tempUser) {
+                    await deleteUser(tempUser).catch(delErr => console.error("Failed to delete temporary user:", delErr));
+                }
+                if (error.code === 'auth/email-already-in-use') {
+                    showToast('Diese E-Mail-Adresse wird bereits verwendet.', 'error');
+                } else {
+                    showToast(`Fehler bei der Registrierung: ${error.message}`, 'error');
+                }
+            } finally {
+                isRegistering = false;
+                if (auth.currentUser && auth.currentUser.uid === tempUser?.uid && !auth.currentUser.emailVerified) {
+                    await signOut(auth);
+                }
+                hideLoader();
+            }
+        };
 
         // --- VIDEO FEED & PLAYER ---
         const renderVideoFeedView = () => {
@@ -500,18 +618,66 @@
                 const thumbnailFile = document.getElementById('thumbnail-upload-input').files[0];
                 const videoFile = document.getElementById('video-upload-input').files[0];
                 if (!title || !thumbnailFile || !videoFile) { showToast("Bitte alle Felder ausfüllen.", "error"); return; }
-                showLoader("Video wird hochgeladen...");
+                
+                // --- PROGRESS BAR UI ---
+                modalContent.innerHTML = `
+                    <div id="upload-progress-container">
+                        <p id="upload-status-text" class="text-center mb-2">Lade Vorschaubild hoch...</p>
+                        <div class="w-full bg-slate-700 rounded-full h-4"><div id="progress-bar" class="bg-blue-600 h-4 rounded-full transition-all duration-300" style="width: 0%"></div></div>
+                        <p id="progress-percentage" class="text-center text-sm mt-1">0%</p>
+                        <p id="time-remaining" class="text-center text-xs text-gray-400 mt-1"></p>
+                    </div>`;
+                modalFooter.innerHTML = '';
+
+                const uploadFile = (file, storageRef, statusText) => {
+                    return new Promise((resolve, reject) => {
+                        const uploadTask = uploadBytesResumable(storageRef, file);
+                        const uploadStartTime = Date.now();
+                        document.getElementById('upload-status-text').textContent = statusText;
+
+                        uploadTask.on('state_changed', 
+                            (snapshot) => {
+                                const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+                                document.getElementById('progress-bar').style.width = progress + '%';
+                                document.getElementById('progress-percentage').textContent = Math.round(progress) + '%';
+                                
+                                const elapsedTime = (Date.now() - uploadStartTime) / 1000;
+                                if (elapsedTime > 0.5 && snapshot.bytesTransferred > 0) {
+                                    const uploadSpeed = snapshot.bytesTransferred / elapsedTime;
+                                    const bytesRemaining = snapshot.totalBytes - snapshot.bytesTransferred;
+                                    const secondsRemaining = Math.round(bytesRemaining / uploadSpeed);
+                                    if (isFinite(secondsRemaining) && secondsRemaining > 0) {
+                                        document.getElementById('time-remaining').textContent = `Verbleibende Zeit: ca. ${secondsRemaining} Sekunden`;
+                                    } else {
+                                        document.getElementById('time-remaining').textContent = 'Berechne...';
+                                    }
+                                }
+                            }, 
+                            (error) => { console.error("Upload failed:", error); reject(error); }, 
+                            async () => {
+                                const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
+                                resolve(downloadURL);
+                            }
+                        );
+                    });
+                };
+
                 try {
                     const thumbRef = ref(storage, `thumbnails/${Date.now()}_${thumbnailFile.name}`);
-                    const thumbSnap = await uploadBytes(thumbRef, thumbnailFile);
-                    const thumbnailUrl = await getDownloadURL(thumbSnap.ref);
+                    const thumbnailUrl = await uploadFile(thumbnailFile, thumbRef, 'Lade Vorschaubild hoch...');
+                    
                     const videoRef = ref(storage, `videos/${Date.now()}_${videoFile.name}`);
-                    const videoSnap = await uploadBytes(videoRef, videoFile);
-                    const videoUrl = await getDownloadURL(videoSnap.ref);
+                    const videoUrl = await uploadFile(videoFile, videoRef, 'Lade Video hoch...');
+                    
+                    document.getElementById('upload-status-text').textContent = 'Verarbeite Daten...';
                     await addDoc(collection(db, "videos"), { title, thumbnailUrl, videoUrl, uploaderId: currentUser.uid, uploaderName: currentUserProfile.displayName, views: 0, likes: [], createdAt: serverTimestamp() });
+                    
                     showToast("Video erfolgreich hochgeladen!", "success");
                     closeModal(genericModal);
-                } catch (error) { console.error("Upload failed:", error); showToast("Fehler beim Hochladen.", "error"); } finally { hideLoader(); }
+                } catch (error) {
+                    showToast("Fehler beim Hochladen.", "error");
+                    closeModal(genericModal);
+                }
             });
         };
 

@@ -756,7 +756,8 @@
 
                 const uploadFile = (file, storageRef, statusText) => {
                     return new Promise((resolve, reject) => {
-                        const uploadTask = uploadBytesResumable(storageRef, file);
+                        const metadata = { contentType: file.type };
+                        const uploadTask = uploadBytesResumable(storageRef, file, metadata);
                         const uploadStartTime = Date.now();
                         document.getElementById('upload-status-text').textContent = statusText;
 
@@ -778,7 +779,10 @@
                                     }
                                 }
                             }, 
-                            (error) => { console.error("Upload failed:", error); reject(error); }, 
+                            (error) => { 
+                                console.error("Upload failed:", error);
+                                reject(error);
+                            }, 
                             async () => {
                                 const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
                                 resolve(downloadURL);
@@ -801,7 +805,7 @@
                     showToast("Video erfolgreich hochgeladen!", "success");
                     closeModal(genericModal);
                 } catch (error) {
-                    showToast("Fehler beim Hochladen.", "error");
+                    showToast(`Fehler beim Hochladen: ${error.code}`, "error");
                     closeModal(genericModal);
                 }
             });
@@ -952,7 +956,14 @@
                     userCard.innerHTML = `<div class="flex items-center gap-3"><img src="${user.photoURL || `https://placehold.co/40x40/1E293B/FFFFFF?text=${user.displayName.charAt(0)}`}" class="w-10 h-10 rounded-full object-cover"><div><p class="font-semibold text-white">${user.displayName}</p><p class="text-xs text-gray-500">${user.email}</p></div></div><button data-id="${user.id}" class="add-friend-search-btn btn-secondary text-sm" ${isFriend ? 'disabled' : ''}>${isFriend ? 'Freund' : 'Hinzufügen'}</button>`;
                     resultsContainer.appendChild(userCard);
                 });
-                document.querySelectorAll('.add-friend-search-btn').forEach(btn => { btn.onclick = async (e) => { const targetUserId = e.currentTarget.dataset.id; e.currentTarget.disabled = true; e.currentTarget.textContent = 'Angefragt'; await sendFriendRequest(targetUserId); }; });
+                resultsContainer.querySelectorAll('.add-friend-search-btn').forEach(btn => {
+                    btn.addEventListener('click', async () => {
+                        const targetUserId = btn.dataset.id;
+                        btn.disabled = true;
+                        btn.textContent = 'Angefragt';
+                        await sendFriendRequest(targetUserId);
+                    });
+                });
             };
 
             renderUserList(allUsers); // Initially display all users
@@ -978,8 +989,8 @@
                     container.appendChild(requestCard);
                 }
             }
-            document.querySelectorAll('.accept-friend-btn').forEach(btn => btn.onclick = (e) => acceptFriendRequest(e.currentTarget.dataset.id));
-            document.querySelectorAll('.decline-friend-btn').forEach(btn => btn.onclick = (e) => declineFriendRequest(e.currentTarget.dataset.id));
+            container.querySelectorAll('.accept-friend-btn').forEach(btn => btn.addEventListener('click', () => acceptFriendRequest(btn.dataset.id)));
+            container.querySelectorAll('.decline-friend-btn').forEach(btn => btn.addEventListener('click', () => declineFriendRequest(btn.dataset.id)));
         };
         const acceptFriendRequest = async (senderId) => { try { const batch = writeBatch(db); const currentUserRef = doc(db, `users/${currentUser.uid}`); const senderUserRef = doc(db, `users/${senderId}`); batch.update(currentUserRef, { friends: arrayUnion(senderId), friendRequestsReceived: arrayRemove(senderId) }); batch.update(senderUserRef, { friends: arrayUnion(currentUser.uid), friendRequestsSent: arrayRemove(currentUser.uid) }); await batch.commit(); showToast('Freund hinzugefügt!', 'success'); } catch (error) { showToast(`Fehler: ${error.message}`, 'error'); } };
         const declineFriendRequest = async (senderId) => { try { const batch = writeBatch(db); const currentUserRef = doc(db, `users/${currentUser.uid}`); const senderUserRef = doc(db, `users/${senderId}`); batch.update(currentUserRef, { friendRequestsReceived: arrayRemove(senderId) }); batch.update(senderUserRef, { friendRequestsSent: arrayRemove(currentUser.uid) }); await batch.commit(); showToast('Anfrage abgelehnt.', 'info'); } catch (error) { showToast(`Fehler: ${error.message}`, 'error'); } };
@@ -1003,9 +1014,9 @@
                 }
             }
             lucide.createIcons();
-            document.querySelectorAll('.remove-friend-btn').forEach(btn => { btn.onclick = (e) => removeFriend(e.currentTarget.dataset.id); });
-            document.querySelectorAll('.chat-friend-btn').forEach(btn => { btn.onclick = (e) => openDirectChat(e.currentTarget.dataset.id, e.currentTarget.dataset.name); });
-            document.querySelectorAll('.call-friend-btn').forEach(btn => { btn.onclick = (e) => showCallingModal(e.currentTarget.dataset.name); });
+            container.querySelectorAll('.remove-friend-btn').forEach(btn => { btn.addEventListener('click', () => removeFriend(btn.dataset.id)); });
+            container.querySelectorAll('.chat-friend-btn').forEach(btn => { btn.addEventListener('click', () => openDirectChat(btn.dataset.id, btn.dataset.name)); });
+            container.querySelectorAll('.call-friend-btn').forEach(btn => { btn.addEventListener('click', () => showCallingModal(btn.dataset.name)); });
         };
         const removeFriend = async (friendId) => { showConfirmationModal('Bist du sicher, dass du diesen Freund entfernen möchtest?', async () => { try { const batch = writeBatch(db); const currentUserRef = doc(db, `users/${currentUser.uid}`); const friendUserRef = doc(db, `users/${friendId}`); batch.update(currentUserRef, { friends: arrayRemove(friendId) }); batch.update(friendUserRef, { friends: arrayRemove(currentUser.uid) }); await batch.commit(); showToast('Freund entfernt.', 'info'); } catch (error) { showToast(`Fehler: ${error.message}`, 'error'); } }); };
         
@@ -1069,22 +1080,32 @@
             if (type === 'group' && groupData) {
                 const isOwner = groupData.ownerId === currentUser.uid;
                 const isFounder = currentUserProfile.role === 'founder';
+                let dropdownHTML = `<a href="#" id="invite-friend-btn" class="flex items-center gap-3 px-3 py-2 text-sm text-gray-300 hover:bg-slate-700 rounded-md"><i data-lucide="user-plus" class="w-4 h-4"></i> Freunde einladen</a>`;
+                
+                if(isOwner) {
+                    dropdownHTML += `<a href="#" id="manage-members-btn" class="flex items-center gap-3 px-3 py-2 text-sm text-gray-300 hover:bg-slate-700 rounded-md"><i data-lucide="users" class="w-4 h-4"></i> Mitglieder verwalten</a>`;
+                }
+                if (isFounder) {
+                    dropdownHTML += `<a href="#" id="toggle-public-btn" class="flex items-center gap-3 px-3 py-2 text-sm text-gray-300 hover:bg-slate-700 rounded-md"><i data-lucide="${groupData.isPublic ? 'lock' : 'globe-2'}" class="w-4 h-4"></i> ${groupData.isPublic ? 'Privat machen' : 'Öffentlich machen'}</a>`;
+                }
+                dropdownHTML += `<div class="border-t border-slate-700 my-1"></div>`;
+                dropdownHTML += isOwner 
+                                ? `<a href="#" id="delete-group-btn" class="flex items-center gap-3 px-3 py-2 text-sm text-red-400 hover:bg-red-500 hover:text-white rounded-md"><i data-lucide="trash" class="w-4 h-4"></i> Gruppe löschen</a>`
+                                : `<a href="#" id="leave-group-btn" class="flex items-center gap-3 px-3 py-2 text-sm text-red-400 hover:bg-red-500 hover:text-white rounded-md"><i data-lucide="log-out" class="w-4 h-4"></i> Gruppe verlassen</a>`;
+
                 modalHeaderActions.innerHTML = `
                     <div class="relative">
                         <button id="group-settings-btn" class="text-gray-300 hover:text-white"><i data-lucide="settings-2"></i></button>
                         <div id="group-settings-dropdown" class="hidden absolute right-0 mt-2 w-56 glass-card shadow-lg z-[51] p-2 rounded-xl">
-                            <a href="#" id="invite-friend-btn" class="flex items-center gap-3 px-3 py-2 text-sm text-gray-300 hover:bg-slate-700 rounded-md"><i data-lucide="user-plus" class="w-4 h-4"></i> Freunde einladen</a>
-                            ${isFounder ? `<a href="#" id="toggle-public-btn" class="flex items-center gap-3 px-3 py-2 text-sm text-gray-300 hover:bg-slate-700 rounded-md"><i data-lucide="${groupData.isPublic ? 'lock' : 'globe-2'}" class="w-4 h-4"></i> ${groupData.isPublic ? 'Privat machen' : 'Öffentlich machen'}</a>` : ''}
-                            <div class="border-t border-slate-700 my-1"></div>
-                            ${isOwner 
-                                ? `<a href="#" id="delete-group-btn" class="flex items-center gap-3 px-3 py-2 text-sm text-red-400 hover:bg-red-500 hover:text-white rounded-md"><i data-lucide="trash" class="w-4 h-4"></i> Gruppe löschen</a>`
-                                : `<a href="#" id="leave-group-btn" class="flex items-center gap-3 px-3 py-2 text-sm text-red-400 hover:bg-red-500 hover:text-white rounded-md"><i data-lucide="log-out" class="w-4 h-4"></i> Gruppe verlassen</a>`
-                            }
+                            ${dropdownHTML}
                         </div>
                     </div>`;
 
                 document.getElementById('group-settings-btn').addEventListener('click', () => document.getElementById('group-settings-dropdown').classList.toggle('hidden'));
                 document.getElementById('invite-friend-btn').addEventListener('click', () => showInviteFriendsModal(chatId, groupData.members));
+                if (isOwner) {
+                    document.getElementById('manage-members-btn').addEventListener('click', () => showGroupMembersModal(chatId, groupData.ownerId));
+                }
                 if (isFounder) {
                     document.getElementById('toggle-public-btn').addEventListener('click', () => toggleGroupPublicStatus(chatId, groupData.isPublic));
                 }
@@ -1161,8 +1182,8 @@
 
                 // Add listeners for delete buttons
                 messagesContainer.querySelectorAll('.delete-message-btn').forEach(btn => {
-                    btn.addEventListener('click', (e) => {
-                        const messageId = e.currentTarget.dataset.msgId;
+                    btn.addEventListener('click', () => {
+                        const messageId = btn.dataset.msgId;
                         showConfirmationModal('Möchtest du diese Nachricht wirklich löschen?', () => {
                             deleteMessage(chatId, messageId, type);
                         });
@@ -1282,6 +1303,7 @@
         };
 
         const showInviteFriendsModal = async (groupId, currentMembers) => {
+            document.getElementById('group-settings-dropdown')?.classList.add('hidden');
             const modalTitle = document.getElementById('generic-modal-title');
             const modalContent = document.getElementById('generic-modal-content');
             const modalFooter = document.getElementById('generic-modal-footer');
@@ -1317,12 +1339,12 @@
                     }
                 }
                 inviteList.querySelectorAll('.invite-friend-btn').forEach(btn => {
-                    btn.addEventListener('click', async (e) => {
-                        const friendId = e.currentTarget.dataset.friendId;
+                    btn.addEventListener('click', async () => {
+                        const friendId = btn.dataset.friendId;
                         await updateDoc(doc(db, 'groups', groupId), { members: arrayUnion(friendId) });
                         showToast("Freund eingeladen!", "success");
-                        e.currentTarget.textContent = 'Mitglied';
-                        e.currentTarget.disabled = true;
+                        btn.textContent = 'Mitglied';
+                        btn.disabled = true;
                     });
                 });
             }
@@ -1333,6 +1355,62 @@
             };
         };
 
+        const showGroupMembersModal = async (groupId, ownerId) => {
+            document.getElementById('group-settings-dropdown')?.classList.add('hidden');
+            const modalTitle = document.getElementById('generic-modal-title');
+            const modalContent = document.getElementById('generic-modal-content');
+            const modalFooter = document.getElementById('generic-modal-footer');
+            const modalHeaderActions = document.getElementById('generic-modal-header-actions');
+            modalTitle.textContent = 'Mitglieder verwalten';
+            modalHeaderActions.innerHTML = '';
+            modalContent.innerHTML = `<div id="member-list" class="space-y-2 max-h-96 overflow-y-auto"></div>`;
+            modalFooter.innerHTML = `<button id="close-members-modal" class="btn-secondary w-full">Schließen</button>`;
+            
+            const groupDoc = await getDoc(doc(db, 'groups', groupId));
+            if (!groupDoc.exists()) return;
+
+            const members = groupDoc.data().members || [];
+            const list = document.getElementById('member-list');
+            list.innerHTML = '';
+
+            for(const memberId of members) {
+                const userDoc = await getDoc(doc(db, 'users', memberId));
+                if (userDoc.exists()) {
+                    const memberData = userDoc.data();
+                    const card = document.createElement('div');
+                    card.className = 'glass-card p-3 flex items-center justify-between';
+                    let removeButton = '';
+                    if (currentUser.uid === ownerId && memberId !== ownerId) {
+                        removeButton = `<button data-member-id="${memberId}" data-member-name="${memberData.displayName}" class="remove-member-btn btn-primary bg-red-600 hover:bg-red-500 text-sm">Entfernen</button>`;
+                    }
+                    card.innerHTML = `
+                        <div class="flex items-center gap-3">
+                            <img src="${memberData.photoURL || `https://placehold.co/40x40/1E293B/FFFFFF?text=${memberData.displayName.charAt(0)}`}" class="w-10 h-10 rounded-full object-cover">
+                            <p class="font-semibold text-white">${memberData.displayName}</p>
+                        </div>
+                        ${removeButton}
+                    `;
+                    list.appendChild(card);
+                }
+            }
+
+            list.querySelectorAll('.remove-member-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const memberId = btn.dataset.memberId;
+                    const memberName = btn.dataset.memberName;
+                    showConfirmationModal(`Möchtest du ${memberName} wirklich aus der Gruppe entfernen?`, async () => {
+                        await updateDoc(doc(db, 'groups', groupId), { members: arrayRemove(memberId) });
+                        showToast(`${memberName} wurde entfernt.`, "success");
+                        showGroupMembersModal(groupId, ownerId); // Refresh the list
+                    });
+                });
+            });
+
+            document.getElementById('close-members-modal').onclick = async () => {
+                closeModal(genericModal);
+                await openGroupChat(groupId);
+            };
+        };
 
         
         const showCallingModal = (friendName) => {
@@ -1384,7 +1462,8 @@
                 try {
                     await auth.currentUser.getIdToken(true);
                     const storageRef = ref(storage, `profilePictures/${currentUser.uid}`);
-                    const uploadTask = uploadBytesResumable(storageRef, selectedFile);
+                    const metadata = { contentType: selectedFile.type };
+                    const uploadTask = uploadBytesResumable(storageRef, selectedFile, metadata);
 
                     uploadTask.on('state_changed', 
                         (snapshot) => {
@@ -1396,7 +1475,7 @@
                         }, 
                         (error) => {
                             console.error("Upload failed", error);
-                            showToast('Fehler beim Hochladen des Bildes.', 'error');
+                            showToast(`Fehler beim Hochladen: ${error.code}`, 'error');
                             closeModal(genericModal);
                         }, 
                         async () => {
@@ -1446,7 +1525,7 @@
                     noteEl.innerHTML = `<p>${note.text}</p><button data-id="${note.id}" class="delete-note-btn text-red-500 hover:text-red-400"><i data-lucide="trash-2"></i></button>`;
                     list.appendChild(noteEl);
                 });
-                document.querySelectorAll('.delete-note-btn').forEach(btn => { btn.onclick = (e) => { const noteId = e.currentTarget.dataset.id; deleteDoc(doc(db, `users/${currentUser.uid}/notes`, noteId)); }; });
+                list.querySelectorAll('.delete-note-btn').forEach(btn => { btn.addEventListener('click', () => { const noteId = btn.dataset.id; deleteDoc(doc(db, `users/${currentUser.uid}/notes`, noteId)); }); });
                 lucide.createIcons();
             });
             document.getElementById('add-note-form').addEventListener('submit', async (e) => { e.preventDefault(); const input = document.getElementById('note-input'); const text = input.value.trim(); if (text) { input.value = ''; await addDoc(notesCollectionRef, { text, createdAt: serverTimestamp() }); } });
@@ -1552,8 +1631,8 @@
                 });
                 modalContent.innerHTML = `<div class="space-y-4">${userCardsHtml}</div>`;
                 lucide.createIcons();
-                document.querySelectorAll('.toggle-admin-btn').forEach(btn => { btn.onclick = (e) => toggleAdminRole(e.currentTarget.dataset.id, e.currentTarget.dataset.role); });
-                document.querySelectorAll('.toggle-ban-btn').forEach(btn => { btn.onclick = (e) => toggleBanStatus(e.currentTarget.dataset.id, e.currentTarget.dataset.banned === 'true'); });
+                document.querySelectorAll('.toggle-admin-btn').forEach(btn => { btn.addEventListener('click', () => toggleAdminRole(btn.dataset.id, btn.dataset.role)); });
+                document.querySelectorAll('.toggle-ban-btn').forEach(btn => { btn.addEventListener('click', () => toggleBanStatus(btn.dataset.id, btn.dataset.banned === 'true')); });
             });
         };
         

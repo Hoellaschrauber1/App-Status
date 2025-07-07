@@ -13,6 +13,9 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet">
     <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <!-- Tone.js for sound effects -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
 
     <style>
         /* Custom styles for a modern, gaming-inspired look */
@@ -205,6 +208,8 @@
         let unsubscribeChatListener = null;
         let unsubscribeTypingListener = null;
         let longPressTimer = null;
+        let activeChatId = null;
+        let notificationSound;
 
         // --- HELPER & MODAL FUNCTIONS ---
         const showLoader = (text = 'Lade...') => {
@@ -419,27 +424,15 @@
                 }
             }
             
-            let appealButtonHTML = '';
-            if (currentUserProfile.hasSubmittedAppeal) {
-                appealButtonHTML = `<p class="mt-4 text-yellow-400">Dein Entbannungsantrag wird geprüft.</p>`;
-            } else {
-                appealButtonHTML = `<button id="appeal-ban-btn" class="btn-primary mt-6">Entbannungsantrag stellen</button>`;
-            }
-
             mainContent.innerHTML = `
             <div class="w-full max-w-2xl space-y-6 mx-auto text-center">
                 <div class="glass-card p-8">
                     <i data-lucide="gavel" class="w-16 h-16 mx-auto text-red-500 mb-4"></i>
                     <h2 class="text-2xl font-bold">Dein Konto wurde gesperrt</h2>
                     <p class="text-gray-400 mt-2">Du wurdest von <strong>${bannerName}</strong> gesperrt. Du hast keinen Zugriff auf die App-Funktionen.</p>
-                    ${appealButtonHTML}
                 </div>
             </div>`;
             lucide.createIcons();
-
-            if (document.getElementById('appeal-ban-btn')) {
-                document.getElementById('appeal-ban-btn').addEventListener('click', showUnbanAppealModal);
-            }
         };
 
         const showAuthModal = (view = 'login') => {
@@ -1104,6 +1097,7 @@
         };
 
         const openChat = async (chatId, chatName, type, groupData = null) => {
+            activeChatId = chatId;
             if (unsubscribeChatListener) unsubscribeChatListener();
             if (unsubscribeTypingListener) unsubscribeTypingListener();
 
@@ -1185,6 +1179,15 @@
             const messagesContainer = document.getElementById('chat-messages');
             const messagesQuery = query(collection(db, collectionPath), orderBy('timestamp', 'desc'));
             unsubscribeChatListener = onSnapshot(messagesQuery, (snapshot) => {
+                snapshot.docChanges().forEach((change) => {
+                    if (change.type === "added") {
+                        const msg = {id: change.doc.id, ...change.doc.data()};
+                        if (msg.senderId !== currentUser.uid && document.hidden) {
+                            showNotification(`Neue Nachricht von ${msg.senderName}`, msg.text);
+                        }
+                    }
+                });
+
                 messagesContainer.innerHTML = '';
                 snapshot.forEach(docSnap => {
                     const msg = {id: docSnap.id, ...docSnap.data()};
@@ -1636,37 +1639,126 @@
             modalTitle.textContent = 'Einstellungen';
             document.getElementById('generic-modal-header-actions').innerHTML = '';
             modalContent.innerHTML = `
-                <div>
-                    <label for="change-displayname-input" class="block text-sm font-medium text-gray-300 mb-1">Anzeigename ändern</label>
-                    <input type="text" id="change-displayname-input" value="${currentUserProfile.displayName}" class="w-full p-3 bg-slate-800 border border-slate-700 rounded-lg">
+                <div class="space-y-4">
+                    <button id="change-name-btn" class="w-full text-left p-3 glass-card hover:bg-slate-700 rounded-lg">Anzeigename ändern</button>
+                    <button id="change-password-btn" class="w-full text-left p-3 glass-card hover:bg-slate-700 rounded-lg">Passwort ändern</button>
+                    <div class="flex justify-between items-center p-3 glass-card rounded-lg">
+                        <label for="notifications-toggle">Nachrichten-Benachrichtigungen</label>
+                        <input type="checkbox" id="notifications-toggle" class="toggle-checkbox">
+                    </div>
                 </div>
             `;
-            modalFooter.innerHTML = `<button id="save-settings-btn" class="btn-primary">Änderungen speichern</button>`;
+            modalFooter.innerHTML = '';
             openModal(genericModal);
 
-            document.getElementById('save-settings-btn').onclick = async () => {
-                const newName = document.getElementById('change-displayname-input').value.trim();
-                if (newName.length < 3) {
-                    showToast("Der Anzeigename muss mindestens 3 Zeichen lang sein.", "error");
-                    return;
+            document.getElementById('change-name-btn').addEventListener('click', showChangeNameModal);
+            document.getElementById('change-password-btn').addEventListener('click', showChangePasswordModal);
+            document.getElementById('notifications-toggle').addEventListener('change', toggleNotifications);
+        };
+
+        const showChangeNameModal = () => {
+            closeModal(genericModal);
+            setTimeout(() => { // Allow old modal to close
+                const modalTitle = document.getElementById('generic-modal-title');
+                const modalContent = document.getElementById('generic-modal-content');
+                const modalFooter = document.getElementById('generic-modal-footer');
+                modalTitle.textContent = 'Anzeigename ändern';
+                modalContent.innerHTML = `
+                    <div>
+                        <label for="change-displayname-input" class="block text-sm font-medium text-gray-300 mb-1">Neuer Anzeigename</label>
+                        <input type="text" id="change-displayname-input" value="${currentUserProfile.displayName}" class="w-full p-3 bg-slate-800 border border-slate-700 rounded-lg">
+                    </div>
+                `;
+                modalFooter.innerHTML = `<button id="save-settings-btn" class="btn-primary">Änderungen speichern</button>`;
+                openModal(genericModal);
+
+                document.getElementById('save-settings-btn').onclick = async () => {
+                    const newName = document.getElementById('change-displayname-input').value.trim();
+                    if (newName.length < 3) {
+                        showToast("Der Anzeigename muss mindestens 3 Zeichen lang sein.", "error");
+                        return;
+                    }
+                    if (newName === currentUserProfile.displayName) {
+                        closeModal(genericModal);
+                        return;
+                    }
+                    showLoader("Speichere...");
+                    try {
+                        await updateProfile(auth.currentUser, { displayName: newName });
+                        await updateDoc(doc(db, 'users', currentUser.uid), { displayName: newName });
+                        showToast("Anzeigename erfolgreich geändert!", "success");
+                        closeModal(genericModal);
+                    } catch (error) {
+                        console.error("Error updating display name:", error);
+                        showToast("Fehler beim Ändern des Namens.", "error");
+                    } finally {
+                        hideLoader();
+                    }
+                };
+            }, 350);
+        };
+
+        const showChangePasswordModal = () => {
+            closeModal(genericModal);
+            setTimeout(() => {
+                const modalTitle = document.getElementById('generic-modal-title');
+                const modalContent = document.getElementById('generic-modal-content');
+                const modalFooter = document.getElementById('generic-modal-footer');
+                modalTitle.textContent = 'Passwort ändern';
+                modalContent.innerHTML = `<p class="text-gray-300">Wir senden dir eine E-Mail an <strong>${currentUser.email}</strong>, mit der du dein Passwort zurücksetzen kannst.</p>`;
+                modalFooter.innerHTML = `<button id="send-password-reset-btn" class="btn-primary">E-Mail senden</button>`;
+                openModal(genericModal);
+
+                document.getElementById('send-password-reset-btn').onclick = async () => {
+                    showLoader("Sende E-Mail...");
+                    try {
+                        await sendPasswordResetEmail(auth, currentUser.email);
+                        showToast("E-Mail zum Zurücksetzen des Passworts wurde gesendet.", "success");
+                        closeModal(genericModal);
+                    } catch (error) {
+                        console.error("Password reset error:", error);
+                        showToast("Fehler beim Senden der E-Mail.", "error");
+                    } finally {
+                        hideLoader();
+                    }
+                };
+            }, 350);
+        };
+        
+        const toggleNotifications = async (e) => {
+            if (e.target.checked) {
+                if (Notification.permission === "granted") {
+                    showToast("Benachrichtigungen sind bereits aktiviert.", "info");
+                } else if (Notification.permission !== "denied") {
+                    const permission = await Notification.requestPermission();
+                    if (permission === "granted") {
+                        showToast("Benachrichtigungen aktiviert!", "success");
+                        new Notification("Danke!", { body: "Du wirst jetzt über neue Nachrichten informiert." });
+                    } else {
+                        showToast("Benachrichtigungen wurden blockiert.", "error");
+                        e.target.checked = false;
+                    }
+                } else {
+                    showToast("Benachrichtigungen sind in den Browsereinstellungen blockiert.", "error");
+                    e.target.checked = false;
                 }
-                if (newName === currentUserProfile.displayName) {
-                    closeModal(genericModal);
-                    return;
-                }
-                showLoader("Speichere...");
-                try {
-                    await updateProfile(auth.currentUser, { displayName: newName });
-                    await updateDoc(doc(db, 'users', currentUser.uid), { displayName: newName });
-                    showToast("Anzeigename erfolgreich geändert!", "success");
-                    closeModal(genericModal);
-                } catch (error) {
-                    console.error("Error updating display name:", error);
-                    showToast("Fehler beim Ändern des Namens.", "error");
-                } finally {
-                    hideLoader();
-                }
-            };
+            } else {
+                showToast("Benachrichtigungen deaktiviert.", "info");
+            }
+        };
+
+        const showNotification = (title, body) => {
+            if (Notification.permission !== "granted") return;
+            
+            new Notification(title, { body });
+
+            if (!notificationSound) {
+                notificationSound = new Tone.Synth({
+                    oscillator: { type: 'sine' },
+                    envelope: { attack: 0.005, decay: 0.1, sustain: 0.3, release: 1 }
+                }).toDestination();
+            }
+            notificationSound.triggerAttackRelease("C5", "8n");
         };
         
         const showAdminPanel = async () => {

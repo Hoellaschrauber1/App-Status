@@ -310,6 +310,7 @@
                         <img src="${currentUserProfile.photoURL || `https://placehold.co/40x40/1E293B/FFFFFF?text=${currentUserProfile.displayName.charAt(0)}`}" class="w-10 h-10 rounded-full object-cover">
                     </button>
                     <div id="user-dropdown-logged-in" class="hidden absolute right-0 top-12 w-56 glass-card shadow-lg z-50 p-2">
+                        <a href="#" id="settings-btn" class="flex items-center gap-3 px-3 py-2 text-sm text-gray-300 hover:bg-slate-700 rounded-md"><i data-lucide="settings" class="w-4 h-4"></i> Einstellungen</a>
                         <a href="#" id="upload-video-btn" class="flex items-center gap-3 px-3 py-2 text-sm text-gray-300 hover:bg-slate-700 rounded-md"><i data-lucide="video" class="w-4 h-4"></i> Video hochladen</a>
                         <a href="#" id="change-pic-btn" class="flex items-center gap-3 px-3 py-2 text-sm text-gray-300 hover:bg-slate-700 rounded-md"><i data-lucide="camera" class="w-4 h-4"></i> Profilbild ändern</a>
                         <a href="#" id="notes-btn" class="flex items-center gap-3 px-3 py-2 text-sm text-gray-300 hover:bg-slate-700 rounded-md"><i data-lucide="notebook" class="w-4 h-4"></i> Meine Notizen</a>
@@ -321,6 +322,7 @@
             document.getElementById('profile-button-logged-in').addEventListener('click', () => document.getElementById('user-dropdown-logged-in').classList.toggle('hidden'));
             document.getElementById('chat-button').addEventListener('click', openChatsAndFriendsModal);
             document.getElementById('logout-btn').addEventListener('click', handleLogout);
+            document.getElementById('settings-btn').addEventListener('click', showSettingsModal);
             document.getElementById('upload-video-btn').addEventListener('click', showUploadVideoModal);
             document.getElementById('change-pic-btn').addEventListener('click', showProfilePicModal);
             document.getElementById('notes-btn').addEventListener('click', showNotesModal);
@@ -1169,6 +1171,45 @@
                 lucide.createIcons();
             });
             document.getElementById('add-note-form').addEventListener('submit', async (e) => { e.preventDefault(); const input = document.getElementById('note-input'); const text = input.value.trim(); if (text) { input.value = ''; await addDoc(notesCollectionRef, { text, createdAt: serverTimestamp() }); } });
+        };
+
+        const showSettingsModal = () => {
+            const modalTitle = document.getElementById('generic-modal-title');
+            const modalContent = document.getElementById('generic-modal-content');
+            const modalFooter = document.getElementById('generic-modal-footer');
+            modalTitle.textContent = 'Einstellungen';
+            modalContent.innerHTML = `
+                <div>
+                    <label for="change-displayname-input" class="block text-sm font-medium text-gray-300 mb-1">Anzeigename ändern</label>
+                    <input type="text" id="change-displayname-input" value="${currentUserProfile.displayName}" class="w-full p-3 bg-slate-800 border border-slate-700 rounded-lg">
+                </div>
+            `;
+            modalFooter.innerHTML = `<button id="save-settings-btn" class="btn-primary">Änderungen speichern</button>`;
+            openModal(genericModal);
+
+            document.getElementById('save-settings-btn').onclick = async () => {
+                const newName = document.getElementById('change-displayname-input').value.trim();
+                if (newName.length < 3) {
+                    showToast("Der Anzeigename muss mindestens 3 Zeichen lang sein.", "error");
+                    return;
+                }
+                if (newName === currentUserProfile.displayName) {
+                    closeModal(genericModal);
+                    return;
+                }
+                showLoader("Speichere...");
+                try {
+                    await updateProfile(auth.currentUser, { displayName: newName });
+                    await updateDoc(doc(db, 'users', currentUser.uid), { displayName: newName });
+                    showToast("Anzeigename erfolgreich geändert!", "success");
+                    closeModal(genericModal);
+                } catch (error) {
+                    console.error("Error updating display name:", error);
+                    showToast("Fehler beim Ändern des Namens.", "error");
+                } finally {
+                    hideLoader();
+                }
+            };
         };
         
         const showAdminPanel = async () => {

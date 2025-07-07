@@ -70,6 +70,16 @@
         /* Loading spinner */
         .loader { border: 4px solid #f3f3f3; border-top: 4px solid #3B82F6; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        /* Recording Indicator */
+        .recording-indicator {
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+            70% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+        }
         
     </style>
 </head>
@@ -158,7 +168,7 @@
         </button>
     </div>
 
-    <!-- **MODIFIZIERT: Emoji & GIF Picker Popover zentriert** -->
+    <!-- Emoji & GIF Picker Popover -->
     <div id="chat-picker-popover" class="hidden fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[60] glass-card p-2 rounded-lg w-full max-w-sm">
         <!-- Content will be injected by JS -->
     </div>
@@ -226,6 +236,9 @@
         let notificationSound;
         let previousUnreadCount = 0;
         let activePicker = null; // 'emoji' or 'gif'
+        let mediaRecorder = null;
+        let isRecording = false;
+        let audioChunks = [];
 
         // --- HELPER & MODAL FUNCTIONS ---
         const showLoader = (text = 'Lade...') => {
@@ -1148,246 +1161,253 @@
             openChat(groupData.id, groupData.name, 'group', groupData);
         };
 
+        // **MODIFIZIERT: `openChat` schließt jetzt das vorherige Modal**
         const openChat = async (chatId, chatName, type, groupData = null) => {
-            if (currentUser) {
-                const userRef = doc(db, 'users', currentUser.uid);
-                await updateDoc(userRef, { unreadChats: arrayRemove(chatId) });
-            }
+            closeModal(chatsFriendsModal); // Schließt das "Chats & Freunde"-Fenster
 
-            activeChatId = chatId;
-            activeChatType = type;
-            if (unsubscribeChatListener) unsubscribeChatListener();
-            if (unsubscribeTypingListener) unsubscribeTypingListener();
+            // Warte kurz, damit die Schließanimation abgeschlossen ist, bevor das neue Fenster öffnet
+            setTimeout(async () => {
+                if (currentUser) {
+                    const userRef = doc(db, 'users', currentUser.uid);
+                    await updateDoc(userRef, { unreadChats: arrayRemove(chatId) });
+                }
 
-            const modalTitle = document.getElementById('generic-modal-title');
-            const modalContent = document.getElementById('generic-modal-content');
-            const modalFooter = document.getElementById('generic-modal-footer');
-            const modalHeaderActions = document.getElementById('generic-modal-header-actions');
+                activeChatId = chatId;
+                activeChatType = type;
+                if (unsubscribeChatListener) unsubscribeChatListener();
+                if (unsubscribeTypingListener) unsubscribeTypingListener();
 
-            modalTitle.textContent = chatName;
-            modalContent.innerHTML = `<div id="chat-messages" class="h-96 overflow-y-auto flex flex-col-reverse p-2 space-y-2 space-y-reverse"></div>`;
-            
-            modalFooter.innerHTML = `
-                <div id="typing-indicator" class="text-sm text-gray-400 h-5 italic mb-1"></div>
-                <form id="chat-form" class="flex gap-2 items-center">
-                    <button type="button" id="gif-btn" class="btn-secondary p-2"><i data-lucide="file-image"></i></button>
-                    <div class="relative flex-grow">
-                        <input id="chat-input" class="w-full p-2 bg-slate-800 border border-slate-700 rounded-lg pr-10" placeholder="Nachricht schreiben..." autocomplete="off">
-                        <button type="button" id="emoji-btn" class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white"><i data-lucide="smile"></i></button>
-                    </div>
-                    <button type="submit" class="btn-primary p-2"><i data-lucide="send"></i></button>
-                </form>
-            `;
-            
-            modalHeaderActions.innerHTML = '';
-            if (type === 'group' && groupData) {
-                const isOwner = groupData.ownerId === currentUser.uid;
-                const isFounder = currentUserProfile.role === 'founder';
-                let dropdownHTML = `<a href="#" id="invite-friend-btn" class="flex items-center gap-3 px-3 py-2 text-sm text-gray-300 hover:bg-slate-700 rounded-md"><i data-lucide="user-plus" class="w-4 h-4"></i> Freunde einladen</a>`;
+                const modalTitle = document.getElementById('generic-modal-title');
+                const modalContent = document.getElementById('generic-modal-content');
+                const modalFooter = document.getElementById('generic-modal-footer');
+                const modalHeaderActions = document.getElementById('generic-modal-header-actions');
+
+                modalTitle.textContent = chatName;
+                modalContent.innerHTML = `<div id="chat-messages" class="h-96 overflow-y-auto flex flex-col-reverse p-2 space-y-2 space-y-reverse"></div>`;
                 
-                if(isOwner) {
-                    dropdownHTML += `<a href="#" id="manage-members-btn" class="flex items-center gap-3 px-3 py-2 text-sm text-gray-300 hover:bg-slate-700 rounded-md"><i data-lucide="users" class="w-4 h-4"></i> Mitglieder verwalten</a>`;
-                }
-                if (isFounder) {
-                    dropdownHTML += `<a href="#" id="toggle-public-btn" class="flex items-center gap-3 px-3 py-2 text-sm text-gray-300 hover:bg-slate-700 rounded-md"><i data-lucide="${groupData.isPublic ? 'lock' : 'globe-2'}" class="w-4 h-4"></i> ${groupData.isPublic ? 'Privat machen' : 'Öffentlich machen'}</a>`;
-                }
-                dropdownHTML += `<div class="border-t border-slate-700 my-1"></div>`;
-                dropdownHTML += isOwner 
-                                ? `<a href="#" id="delete-group-btn" class="flex items-center gap-3 px-3 py-2 text-sm text-red-400 hover:bg-red-500 hover:text-white rounded-md"><i data-lucide="trash" class="w-4 h-4"></i> Gruppe löschen</a>`
-                                : `<a href="#" id="leave-group-btn" class="flex items-center gap-3 px-3 py-2 text-sm text-red-400 hover:bg-red-500 hover:text-white rounded-md"><i data-lucide="log-out" class="w-4 h-4"></i> Gruppe verlassen</a>`;
-
-                modalHeaderActions.innerHTML = `
-                    <div class="relative">
-                        <button id="group-settings-btn" class="text-gray-300 hover:text-white"><i data-lucide="settings-2"></i></button>
-                        <div id="group-settings-dropdown" class="hidden absolute right-0 mt-2 w-56 glass-card shadow-lg z-[51] p-2 rounded-xl">
-                            ${dropdownHTML}
+                modalFooter.innerHTML = `
+                    <div id="typing-indicator" class="text-sm text-gray-400 h-5 italic mb-1"></div>
+                    <form id="chat-form" class="flex gap-2 items-center">
+                        <button type="button" id="gif-btn" class="btn-secondary p-2"><i data-lucide="file-image"></i></button>
+                        <button type="button" id="mic-btn" class="btn-secondary p-2"><i data-lucide="mic"></i></button>
+                        <div class="relative flex-grow">
+                            <input id="chat-input" class="w-full p-2 bg-slate-800 border border-slate-700 rounded-lg pr-10" placeholder="Nachricht schreiben..." autocomplete="off">
+                            <button type="button" id="emoji-btn" class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white"><i data-lucide="smile"></i></button>
                         </div>
-                    </div>`;
-
-                document.getElementById('group-settings-btn').addEventListener('click', () => document.getElementById('group-settings-dropdown').classList.toggle('hidden'));
-                document.getElementById('invite-friend-btn').addEventListener('click', () => showInviteFriendsModal(chatId, groupData.members));
-                if (isOwner) {
-                    document.getElementById('manage-members-btn').addEventListener('click', () => showGroupMembersModal(chatId, groupData.ownerId));
-                }
-                if (isFounder) {
-                    document.getElementById('toggle-public-btn').addEventListener('click', () => toggleGroupPublicStatus(chatId, groupData.isPublic));
-                }
-                if (isOwner) {
-                    document.getElementById('delete-group-btn').addEventListener('click', () => deleteGroup(chatId, chatName));
-                } else {
-                    document.getElementById('leave-group-btn').addEventListener('click', () => leaveGroup(chatId, chatName));
-                }
-            }
-
-
-            lucide.createIcons();
-            openModal(genericModal);
-            
-            // **MODIFIZIERT: Event Listener für Picker-Buttons**
-            document.getElementById('emoji-btn').addEventListener('click', () => togglePicker('emoji'));
-            document.getElementById('gif-btn').addEventListener('click', () => togglePicker('gif'));
-
-            const collectionPath = type === 'group' ? `groups/${chatId}/messages` : `directMessages/${chatId}/messages`;
-            const chatRoomRef = doc(db, type === 'group' ? 'groups' : 'directMessages', chatId);
-
-            try {
-                await setDoc(chatRoomRef, { 
-                    ...(type === 'direct' && { members: chatId.split('_') }),
-                    typing: {}
-                }, { merge: true });
-            } catch (e) {
-                console.error("Error ensuring chat document exists:", e);
-                showToast("Konnte den Chat nicht öffnen.", "error");
-                closeModal(genericModal);
-                return;
-            }
-
-            const messagesContainer = document.getElementById('chat-messages');
-            const messagesQuery = query(collection(db, collectionPath), orderBy('timestamp', 'desc'));
-            unsubscribeChatListener = onSnapshot(messagesQuery, (snapshot) => {
-                messagesContainer.innerHTML = '';
-                snapshot.forEach(docSnap => {
-                    const msg = {id: docSnap.id, ...docSnap.data()};
-                    const messageEl = document.createElement('div');
-                    const isSender = msg.senderId === currentUser.uid;
-                    const isGroupOwner = type === 'group' && groupData && groupData.ownerId === currentUser.uid;
+                        <button type="submit" class="btn-primary p-2"><i data-lucide="send"></i></button>
+                    </form>
+                `;
+                
+                modalHeaderActions.innerHTML = '';
+                if (type === 'group' && groupData) {
+                    const isOwner = groupData.ownerId === currentUser.uid;
+                    const isFounder = currentUserProfile.role === 'founder';
+                    let dropdownHTML = `<a href="#" id="invite-friend-btn" class="flex items-center gap-3 px-3 py-2 text-sm text-gray-300 hover:bg-slate-700 rounded-md"><i data-lucide="user-plus" class="w-4 h-4"></i> Freunde einladen</a>`;
                     
-                    // **MODIFIZIERT: Emoji-Styling entfernt**
-                    messageEl.className = `w-full flex group ${isSender ? 'justify-end' : 'justify-start'}`;
-                    
-                    let readReceipt = '';
-                    if (isSender && !msg.isDeleted) {
-                        if (msg.readBy && msg.readBy.length > 1) {
-                            readReceipt = `<i data-lucide="check-check" class="w-4 h-4 text-blue-400"></i>`;
-                        } else {
-                            readReceipt = `<i data-lucide="check" class="w-4 h-4 text-gray-500"></i>`;
-                        }
+                    if(isOwner) {
+                        dropdownHTML += `<a href="#" id="manage-members-btn" class="flex items-center gap-3 px-3 py-2 text-sm text-gray-300 hover:bg-slate-700 rounded-md"><i data-lucide="users" class="w-4 h-4"></i> Mitglieder verwalten</a>`;
                     }
-
-                    const canDelete = (isSender || isGroupOwner) && !msg.isDeleted;
-                    
-                    let messageContentHTML = '';
-                    if (msg.isDeleted) {
-                        messageContentHTML = `<p class="text-gray-500 italic">Diese Nachricht wurde gelöscht.</p>`;
-                    } else if (msg.type === 'gif') {
-                        messageContentHTML = `<img src="${msg.content}" alt="GIF" class="rounded-lg max-w-full h-auto mt-1">`;
-                    } else { 
-                        messageContentHTML = `<p class="text-white break-words">${msg.text || ''}</p>`;
+                    if (isFounder) {
+                        dropdownHTML += `<a href="#" id="toggle-public-btn" class="flex items-center gap-3 px-3 py-2 text-sm text-gray-300 hover:bg-slate-700 rounded-md"><i data-lucide="${groupData.isPublic ? 'lock' : 'globe-2'}" class="w-4 h-4"></i> ${groupData.isPublic ? 'Privat machen' : 'Öffentlich machen'}</a>`;
                     }
-                    
-                    const timestampHTML = !msg.isDeleted ? `
-                        <div class="flex items-center justify-end gap-1 mt-1">
-                            <p class="text-xs text-gray-400">${new Date(msg.timestamp?.toDate()).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</p>
-                            ${readReceipt}
-                        </div>` : '';
+                    dropdownHTML += `<div class="border-t border-slate-700 my-1"></div>`;
+                    dropdownHTML += isOwner 
+                                    ? `<a href="#" id="delete-group-btn" class="flex items-center gap-3 px-3 py-2 text-sm text-red-400 hover:bg-red-500 hover:text-white rounded-md"><i data-lucide="trash" class="w-4 h-4"></i> Gruppe löschen</a>`
+                                    : `<a href="#" id="leave-group-btn" class="flex items-center gap-3 px-3 py-2 text-sm text-red-400 hover:bg-red-500 hover:text-white rounded-md"><i data-lucide="log-out" class="w-4 h-4"></i> Gruppe verlassen</a>`;
 
-                    const senderNameHTML = !isSender && type === 'group' && !msg.isDeleted
-                        ? `<p class="text-xs font-bold text-blue-300">${msg.senderName}</p>`
-                        : '';
-                    
-                    const messageBoxClass = isSender 
-                        ? (msg.type === 'gif' ? 'bg-transparent' : 'bg-blue-700')
-                        : (msg.isDeleted ? 'bg-slate-800/50' : (msg.type === 'gif' ? 'bg-transparent' : 'bg-slate-700'));
-
-                    messageEl.innerHTML = `
-                        <div class="flex items-end gap-2 ${isSender ? 'flex-row-reverse' : 'flex-row'}">
-                            <div class="max-w-xs lg:max-w-md px-3 py-2 rounded-lg ${messageBoxClass}">
-                                ${senderNameHTML}
-                                ${messageContentHTML}
-                                ${timestampHTML}
+                    modalHeaderActions.innerHTML = `
+                        <div class="relative">
+                            <button id="group-settings-btn" class="text-gray-300 hover:text-white"><i data-lucide="settings-2"></i></button>
+                            <div id="group-settings-dropdown" class="hidden absolute right-0 mt-2 w-56 glass-card shadow-lg z-[51] p-2 rounded-xl">
+                                ${dropdownHTML}
                             </div>
-                        </div>
-                    `;
-                    
-                    if (canDelete) {
-                        const messageBox = messageEl.querySelector('.max-w-xs');
-                        const handlePressStart = (e) => {
-                            const targetElement = e.currentTarget;
-                            clearTimeout(longPressTimer);
-                            longPressTimer = setTimeout(() => {
-                                showMessageContextMenu(targetElement, chatId, msg.id, type);
-                            }, 500);
-                        };
-                        const handlePressEnd = () => clearTimeout(longPressTimer);
+                        </div>`;
 
-                        messageBox.addEventListener('mousedown', handlePressStart);
-                        messageBox.addEventListener('mouseup', handlePressEnd);
-                        messageBox.addEventListener('mouseleave', handlePressEnd);
-                        messageBox.addEventListener('touchstart', (e) => {
-                            e.preventDefault();
-                            handlePressStart(e);
-                        });
-                        messageBox.addEventListener('touchend', handlePressEnd);
+                    document.getElementById('group-settings-btn').addEventListener('click', () => document.getElementById('group-settings-dropdown').classList.toggle('hidden'));
+                    document.getElementById('invite-friend-btn').addEventListener('click', () => showInviteFriendsModal(chatId, groupData.members));
+                    if (isOwner) {
+                        document.getElementById('manage-members-btn').addEventListener('click', () => showGroupMembersModal(chatId, groupData.ownerId));
                     }
+                    if (isFounder) {
+                        document.getElementById('toggle-public-btn').addEventListener('click', () => toggleGroupPublicStatus(chatId, groupData.isPublic));
+                    }
+                    if (isOwner) {
+                        document.getElementById('delete-group-btn').addEventListener('click', () => deleteGroup(chatId, chatName));
+                    } else {
+                        document.getElementById('leave-group-btn').addEventListener('click', () => leaveGroup(chatId, chatName));
+                    }
+                }
 
-                    messagesContainer.appendChild(messageEl);
+                lucide.createIcons();
+                openModal(genericModal);
+                
+                document.getElementById('emoji-btn').addEventListener('click', () => togglePicker('emoji'));
+                document.getElementById('gif-btn').addEventListener('click', () => togglePicker('gif'));
+                document.getElementById('mic-btn').addEventListener('click', handleRecordButtonClick);
 
-                    if (!isSender && !msg.isDeleted && (!msg.readBy || !msg.readBy.includes(currentUser.uid))) {
-                        updateDoc(docSnap.ref, { readBy: arrayUnion(currentUser.uid) });
+                const collectionPath = type === 'group' ? `groups/${chatId}/messages` : `directMessages/${chatId}/messages`;
+                const chatRoomRef = doc(db, type === 'group' ? 'groups' : 'directMessages', chatId);
+
+                try {
+                    await setDoc(chatRoomRef, { 
+                        ...(type === 'direct' && { members: chatId.split('_') }),
+                        typing: {}
+                    }, { merge: true });
+                } catch (e) {
+                    console.error("Error ensuring chat document exists:", e);
+                    showToast("Konnte den Chat nicht öffnen.", "error");
+                    closeModal(genericModal);
+                    return;
+                }
+
+                const messagesContainer = document.getElementById('chat-messages');
+                const messagesQuery = query(collection(db, collectionPath), orderBy('timestamp', 'desc'));
+                unsubscribeChatListener = onSnapshot(messagesQuery, (snapshot) => {
+                    messagesContainer.innerHTML = '';
+                    snapshot.forEach(docSnap => {
+                        const msg = {id: docSnap.id, ...docSnap.data()};
+                        const messageEl = document.createElement('div');
+                        const isSender = msg.senderId === currentUser.uid;
+                        const isGroupOwner = type === 'group' && groupData && groupData.ownerId === currentUser.uid;
+                        
+                        messageEl.className = `w-full flex group ${isSender ? 'justify-end' : 'justify-start'}`;
+                        
+                        let readReceipt = '';
+                        if (isSender && !msg.isDeleted) {
+                            if (msg.readBy && msg.readBy.length > 1) {
+                                readReceipt = `<i data-lucide="check-check" class="w-4 h-4 text-blue-400"></i>`;
+                            } else {
+                                readReceipt = `<i data-lucide="check" class="w-4 h-4 text-gray-500"></i>`;
+                            }
+                        }
+
+                        const canDelete = (isSender || isGroupOwner) && !msg.isDeleted;
+                        
+                        let messageContentHTML = '';
+                        if (msg.isDeleted) {
+                            messageContentHTML = `<p class="text-gray-500 italic">Diese Nachricht wurde gelöscht.</p>`;
+                        } else if (msg.type === 'gif') {
+                            messageContentHTML = `<img src="${msg.content}" alt="GIF" class="rounded-lg max-w-full h-auto mt-1">`;
+                        } else if (msg.type === 'audio') {
+                            messageContentHTML = `<audio controls src="${msg.content}" class="max-w-full"></audio>`;
+                        } else { 
+                            messageContentHTML = `<p class="text-white break-words">${msg.text || ''}</p>`;
+                        }
+                        
+                        const timestampHTML = !msg.isDeleted ? `
+                            <div class="flex items-center justify-end gap-1 mt-1">
+                                <p class="text-xs text-gray-400">${new Date(msg.timestamp?.toDate()).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</p>
+                                ${readReceipt}
+                            </div>` : '';
+
+                        const senderNameHTML = !isSender && type === 'group' && !msg.isDeleted
+                            ? `<p class="text-xs font-bold text-blue-300">${msg.senderName}</p>`
+                            : '';
+                        
+                        const messageBoxClass = isSender 
+                            ? (msg.type === 'gif' ? 'bg-transparent' : 'bg-blue-700')
+                            : (msg.isDeleted ? 'bg-slate-800/50' : (msg.type === 'gif' ? 'bg-transparent' : 'bg-slate-700'));
+
+                        messageEl.innerHTML = `
+                            <div class="flex items-end gap-2 ${isSender ? 'flex-row-reverse' : 'flex-row'}">
+                                <div class="max-w-xs lg:max-w-md px-3 py-2 rounded-lg ${messageBoxClass}">
+                                    ${senderNameHTML}
+                                    ${messageContentHTML}
+                                    ${timestampHTML}
+                                </div>
+                            </div>
+                        `;
+                        
+                        if (canDelete) {
+                            const messageBox = messageEl.querySelector('.max-w-xs');
+                            const handlePressStart = (e) => {
+                                const targetElement = e.currentTarget;
+                                clearTimeout(longPressTimer);
+                                longPressTimer = setTimeout(() => {
+                                    showMessageContextMenu(targetElement, chatId, msg.id, type);
+                                }, 500);
+                            };
+                            const handlePressEnd = () => clearTimeout(longPressTimer);
+
+                            messageBox.addEventListener('mousedown', handlePressStart);
+                            messageBox.addEventListener('mouseup', handlePressEnd);
+                            messageBox.addEventListener('mouseleave', handlePressEnd);
+                            messageBox.addEventListener('touchstart', (e) => {
+                                e.preventDefault();
+                                handlePressStart(e);
+                            });
+                            messageBox.addEventListener('touchend', handlePressEnd);
+                        }
+
+                        messagesContainer.appendChild(messageEl);
+
+                        if (!isSender && !msg.isDeleted && (!msg.readBy || !msg.readBy.includes(currentUser.uid))) {
+                            updateDoc(docSnap.ref, { readBy: arrayUnion(currentUser.uid) });
+                        }
+                    });
+
+                    lucide.createIcons();
+                });
+
+                const typingIndicator = document.getElementById('typing-indicator');
+                unsubscribeTypingListener = onSnapshot(chatRoomRef, (docSnap) => {
+                    if (docSnap.exists()) {
+                        const typingUsers = docSnap.data().typing || {};
+                        const otherTypers = Object.keys(typingUsers).filter(uid => uid !== currentUser.uid && typingUsers[uid]);
+                        if (otherTypers.length > 0) {
+                            typingIndicator.textContent = '... schreibt';
+                        } else {
+                            typingIndicator.textContent = '';
+                        }
                     }
                 });
 
-                lucide.createIcons();
-            });
+                const chatInput = document.getElementById('chat-input');
+                chatInput.addEventListener('input', () => {
+                    clearTimeout(typingTimeout);
+                    updateDoc(chatRoomRef, { [`typing.${currentUser.uid}`]: true });
+                    typingTimeout = setTimeout(() => {
+                        updateDoc(chatRoomRef, { [`typing.${currentUser.uid}`]: false });
+                    }, 2000);
+                });
 
-            const typingIndicator = document.getElementById('typing-indicator');
-            unsubscribeTypingListener = onSnapshot(chatRoomRef, (docSnap) => {
-                if (docSnap.exists()) {
-                    const typingUsers = docSnap.data().typing || {};
-                    const otherTypers = Object.keys(typingUsers).filter(uid => uid !== currentUser.uid && typingUsers[uid]);
-                    if (otherTypers.length > 0) {
-                        typingIndicator.textContent = '... schreibt';
-                    } else {
-                        typingIndicator.textContent = '';
-                    }
-                }
-            });
-
-            const chatInput = document.getElementById('chat-input');
-            chatInput.addEventListener('input', () => {
-                clearTimeout(typingTimeout);
-                updateDoc(chatRoomRef, { [`typing.${currentUser.uid}`]: true });
-                typingTimeout = setTimeout(() => {
+                document.getElementById('chat-form').addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    clearTimeout(typingTimeout);
                     updateDoc(chatRoomRef, { [`typing.${currentUser.uid}`]: false });
-                }, 2000);
-            });
-
-            document.getElementById('chat-form').addEventListener('submit', async (e) => {
-                e.preventDefault();
-                clearTimeout(typingTimeout);
-                updateDoc(chatRoomRef, { [`typing.${currentUser.uid}`]: false });
-                const text = chatInput.value.trim();
-                if (text) {
-                    chatInput.value = '';
-                    try {
-                        await addDoc(collection(db, collectionPath), { 
-                            text, 
-                            type: 'text',
-                            senderId: currentUser.uid, 
-                            senderName: currentUserProfile.displayName, 
-                            timestamp: serverTimestamp(), 
-                            readBy: [currentUser.uid] 
-                        });
-
-                        const chatDocSnap = await getDoc(chatRoomRef);
-                        if (chatDocSnap.exists()) {
-                            const members = chatDocSnap.data().members;
-                            const batch = writeBatch(db);
-                            members.forEach(memberId => {
-                                if (memberId !== currentUser.uid) {
-                                    const userRef = doc(db, 'users', memberId);
-                                    batch.update(userRef, { unreadChats: arrayUnion(chatId) });
-                                }
+                    const text = chatInput.value.trim();
+                    if (text) {
+                        chatInput.value = '';
+                        try {
+                            await addDoc(collection(db, collectionPath), { 
+                                text, 
+                                type: 'text',
+                                senderId: currentUser.uid, 
+                                senderName: currentUserProfile.displayName, 
+                                timestamp: serverTimestamp(), 
+                                readBy: [currentUser.uid] 
                             });
-                            await batch.commit();
-                        }
 
-                    } catch (error) {
-                        console.error("Error sending message:", error);
-                        showToast("Nachricht konnte nicht gesendet werden.", "error");
+                            const chatDocSnap = await getDoc(chatRoomRef);
+                            if (chatDocSnap.exists()) {
+                                const members = chatDocSnap.data().members;
+                                const batch = writeBatch(db);
+                                members.forEach(memberId => {
+                                    if (memberId !== currentUser.uid) {
+                                        const userRef = doc(db, 'users', memberId);
+                                        batch.update(userRef, { unreadChats: arrayUnion(chatId) });
+                                    }
+                                });
+                                await batch.commit();
+                            }
+
+                        } catch (error) {
+                            console.error("Error sending message:", error);
+                            showToast("Nachricht konnte nicht gesendet werden.", "error");
+                        }
                     }
-                }
-            });
+                });
+            }, 300); // Wartezeit für die Animation
         };
         
         // --- Chat Management Functions ---
@@ -1967,9 +1987,8 @@
             }
         };
 
-        // --- EMOJI & GIF PICKER FUNCTIONS ---
+        // --- EMOJI, GIF & AUDIO FUNCTIONS ---
 
-        // **MODIFIZIERT: `buttonElement` entfernt**
         const togglePicker = (type) => {
             if (activePicker === type) {
                 hidePicker();
@@ -1978,7 +1997,6 @@
                 pickerPopover.innerHTML = '';
                 pickerPopover.classList.remove('hidden');
 
-                // **MODIFIZIERT: JS-Positionierung entfernt**
                 if (type === 'emoji') {
                     renderEmojiPicker();
                 } else if (type === 'gif') {
@@ -2095,6 +2113,100 @@
             }
         };
 
+        const handleRecordButtonClick = () => {
+            if (isRecording) {
+                stopRecording();
+            } else {
+                startRecording();
+            }
+        };
+
+        const startRecording = async () => {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                isRecording = true;
+                audioChunks = [];
+                mediaRecorder = new MediaRecorder(stream);
+
+                mediaRecorder.ondataavailable = event => {
+                    audioChunks.push(event.data);
+                };
+
+                mediaRecorder.onstop = async () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    const audioFileName = `audio_${Date.now()}.webm`;
+                    const storageRef = ref(storage, `chatAudio/${activeChatId}/${audioFileName}`);
+                    
+                    showLoader('Lade Sprachnachricht hoch...');
+                    try {
+                        const uploadTask = uploadBytesResumable(storageRef, audioBlob);
+                        await uploadTask;
+                        const downloadURL = await getDownloadURL(storageRef);
+                        await sendAudioMessage(downloadURL, activeChatId);
+                    } catch (error) {
+                        console.error("Error uploading audio:", error);
+                        showToast("Fehler beim Hochladen der Sprachnachricht.", "error");
+                    } finally {
+                        hideLoader();
+                    }
+                };
+
+                mediaRecorder.start();
+                const micBtn = document.getElementById('mic-btn');
+                if (micBtn) {
+                    micBtn.classList.add('bg-red-600', 'recording-indicator');
+                }
+            } catch (error) {
+                console.error("Error accessing microphone:", error);
+                showToast("Mikrofonzugriff verweigert oder nicht verfügbar.", "error");
+            }
+        };
+
+        const stopRecording = () => {
+            if (mediaRecorder && isRecording) {
+                mediaRecorder.stop();
+                isRecording = false;
+                const micBtn = document.getElementById('mic-btn');
+                if (micBtn) {
+                    micBtn.classList.remove('bg-red-600', 'recording-indicator');
+                }
+                mediaRecorder.stream.getTracks().forEach(track => track.stop());
+            }
+        };
+
+        const sendAudioMessage = async (audioUrl, chatId) => {
+            if (!chatId || !activeChatType) return;
+            const collectionPath = activeChatType === 'group' ? `groups/${chatId}/messages` : `directMessages/${chatId}/messages`;
+            try {
+                await addDoc(collection(db, collectionPath), {
+                    type: 'audio',
+                    content: audioUrl,
+                    text: '[Sprachnachricht]',
+                    senderId: currentUser.uid,
+                    senderName: currentUserProfile.displayName,
+                    timestamp: serverTimestamp(),
+                    readBy: [currentUser.uid]
+                });
+
+                const chatDocRef = doc(db, activeChatType === 'group' ? 'groups' : 'directMessages', chatId);
+                const chatDocSnap = await getDoc(chatDocRef);
+                if (chatDocSnap.exists()) {
+                    const members = chatDocSnap.data().members;
+                    const batch = writeBatch(db);
+                    members.forEach(memberId => {
+                        if (memberId !== currentUser.uid) {
+                            const userRef = doc(db, 'users', memberId);
+                            batch.update(userRef, { unreadChats: arrayUnion(chatId) });
+                        }
+                    });
+                    await batch.commit();
+                }
+            } catch (error) {
+                console.error("Error sending audio message:", error);
+                showToast("Sprachnachricht konnte nicht gesendet werden.", "error");
+            }
+        };
+
 
         // --- INITIALIZATION ---
         window.onload = () => {
@@ -2106,7 +2218,11 @@
         // --- Event Listeners for Modals ---
         document.getElementById('close-auth-modal').addEventListener('click', () => closeModal(authModal));
         document.getElementById('close-chats-friends-modal').addEventListener('click', () => closeModal(chatsFriendsModal));
+        
+        // **MODIFIZIERT: Logik für den "Zurück"-Button im Chat**
         document.getElementById('close-generic-modal').addEventListener('click', () => {
+            const wasChatOpen = activeChatId !== null;
+
             if (unsubscribeChatListener) {
                 unsubscribeChatListener();
                 unsubscribeChatListener = null;
@@ -2116,7 +2232,19 @@
                 unsubscribeTypingListener = null;
             }
             hidePicker();
+            
+            if (wasChatOpen) {
+                activeChatId = null;
+                activeChatType = null;
+            }
+
             closeModal(genericModal);
+
+            if(wasChatOpen) {
+                setTimeout(() => {
+                    openChatsAndFriendsModal();
+                }, 300);
+            }
         });
 
         document.addEventListener('click', (e) => {

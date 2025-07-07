@@ -841,28 +841,31 @@
             const list = document.getElementById('chats-list');
             list.innerHTML = `<div class="loader mx-auto"></div>`;
 
-            // Fetch groups user is a member of
-            const memberGroupsQuery = query(collection(db, 'groups'), where('members', 'array-contains', currentUser.uid), where('isDeleted', '==', false));
-            // Fetch public groups
-            const publicGroupsQuery = query(collection(db, 'groups'), where('isPublic', '==', true), where('isDeleted', '==', false));
-            // Fetch DMs
-            const dmsQuery = query(collection(db, 'directMessages'), where('members', 'array-contains', currentUser.uid));
-
-            const [memberGroupsSnap, publicGroupsSnap, dmsSnap] = await Promise.all([
-                getDocs(memberGroupsQuery),
-                getDocs(publicGroupsQuery),
-                getDocs(dmsQuery)
-            ]);
-            
             const allChats = new Map();
-
-            // Add member and public groups to the map to avoid duplicates
-            memberGroupsSnap.forEach(doc => allChats.set(doc.id, { type: 'group', id: doc.id, ...doc.data() }));
-            publicGroupsSnap.forEach(doc => {
-                if (!allChats.has(doc.id)) {
-                    allChats.set(doc.id, { type: 'group', id: doc.id, ...doc.data() });
-                }
-            });
+            
+            // --- Founder sees all groups, others see their own + public ---
+            if (currentUserProfile.role === 'founder') {
+                const allGroupsQuery = query(collection(db, 'groups'), where('isDeleted', '==', false));
+                const groupSnaps = await getDocs(allGroupsQuery);
+                groupSnaps.forEach(doc => allChats.set(doc.id, { type: 'group', id: doc.id, ...doc.data() }));
+            } else {
+                const memberGroupsQuery = query(collection(db, 'groups'), where('members', 'array-contains', currentUser.uid), where('isDeleted', '==', false));
+                const publicGroupsQuery = query(collection(db, 'groups'), where('isPublic', '==', true), where('isDeleted', '==', false));
+                const [memberGroupsSnap, publicGroupsSnap] = await Promise.all([
+                    getDocs(memberGroupsQuery),
+                    getDocs(publicGroupsQuery)
+                ]);
+                memberGroupsSnap.forEach(doc => allChats.set(doc.id, { type: 'group', id: doc.id, ...doc.data() }));
+                publicGroupsSnap.forEach(doc => {
+                    if (!allChats.has(doc.id)) {
+                        allChats.set(doc.id, { type: 'group', id: doc.id, ...doc.data() });
+                    }
+                });
+            }
+            
+            // Fetch DMs (remains the same for all users)
+            const dmsQuery = query(collection(db, 'directMessages'), where('members', 'array-contains', currentUser.uid));
+            const dmsSnap = await getDocs(dmsQuery);
             
             for (const dmDoc of dmsSnap.docs) {
                 const chatData = dmDoc.data();
@@ -884,11 +887,12 @@
                 if (chat.type === 'group') {
                     const isMember = chat.members.includes(currentUser.uid);
                     const publicIcon = chat.isPublic ? `<i data-lucide="globe-2" class="w-4 h-4 text-cyan-400" title="Öffentliche Gruppe"></i>` : '';
+                    const founderEyeIcon = currentUserProfile.role === 'founder' && !isMember ? `<i data-lucide="eye" class="w-4 h-4 text-purple-400" title="Sichtbar als Gründer"></i>` : '';
                     chatItem.innerHTML = `
                         <div class="flex items-center gap-3 overflow-hidden flex-grow cursor-pointer" onclick="this.parentElement.querySelector('.join-btn, .open-btn')?.click()">
                             <div class="w-12 h-12 bg-slate-700 rounded-full flex-shrink-0 flex items-center justify-center"><i data-lucide="users"></i></div>
                             <div class="flex-grow overflow-hidden">
-                                <p class="font-bold truncate flex items-center gap-2">${chat.name} ${publicIcon}</p>
+                                <p class="font-bold truncate flex items-center gap-2">${chat.name} ${publicIcon} ${founderEyeIcon}</p>
                                 <p class="text-sm text-gray-400">${chat.members.length} Mitglieder</p>
                             </div>
                         </div>

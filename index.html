@@ -210,6 +210,7 @@
         let longPressTimer = null;
         let activeChatId = null;
         let notificationSound;
+        let previousUnreadCount = 0;
 
         // --- HELPER & MODAL FUNCTIONS ---
         const showLoader = (text = 'Lade...') => {
@@ -295,6 +296,22 @@
                 unsubscribeUserListener = onSnapshot(userDocRef, async (docSnap) => {
                     if (docSnap.exists()) {
                         currentUserProfile = { id: docSnap.id, ...docSnap.data() };
+                        
+                        // Handle notifications based on unread chats
+                        const unreadChats = currentUserProfile.unreadChats || [];
+                        const badge = document.getElementById('chat-notification-badge');
+                        if (badge) {
+                            if (unreadChats.length > 0) {
+                                badge.classList.remove('hidden');
+                                if (unreadChats.length > previousUnreadCount) {
+                                    showNotificationSound();
+                                }
+                            } else {
+                                badge.classList.add('hidden');
+                            }
+                        }
+                        previousUnreadCount = unreadChats.length;
+
                         if (currentUserProfile.banned) {
                             await renderBannedScreen();
                         } else if (!user.emailVerified) {
@@ -321,7 +338,10 @@
             const crownIcon = currentUserProfile.role === 'founder' || currentUserProfile.role === 'admin' ? `<i data-lucide="crown" class="w-5 h-5 text-yellow-400"></i>` : '';
             headerTitle.innerHTML = `<span class="flex items-center gap-2">Willkommen, ${currentUserProfile.displayName} ${crownIcon}</span>`;
             headerActions.innerHTML = `
-                <button id="chat-button" class="text-gray-300 hover:text-white"><i data-lucide="message-square"></i></button>
+                <button id="chat-button" class="relative text-gray-300 hover:text-white">
+                    <i data-lucide="message-square"></i>
+                    <span id="chat-notification-badge" class="hidden absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full border-2 border-slate-800"></span>
+                </button>
                 <div class="relative">
                     <button id="profile-button-logged-in" class="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center hover:bg-slate-600">
                         <img src="${currentUserProfile.photoURL || `https://placehold.co/40x40/1E293B/FFFFFF?text=${currentUserProfile.displayName.charAt(0)}`}" class="w-10 h-10 rounded-full object-cover">
@@ -827,6 +847,7 @@
 
         // --- CHATS & FRIENDS MODAL ---
         const openChatsAndFriendsModal = () => {
+            document.getElementById('chat-notification-badge').classList.add('hidden');
             openModal(chatsFriendsModal);
             renderChatsTab();
             chatsFriendsModal.querySelectorAll('.tab-btn').forEach(btn => {
@@ -1643,7 +1664,7 @@
                     <button id="change-name-btn" class="w-full text-left p-3 glass-card hover:bg-slate-700 rounded-lg">Anzeigename ändern</button>
                     <button id="change-password-btn" class="w-full text-left p-3 glass-card hover:bg-slate-700 rounded-lg">Passwort ändern</button>
                     <div class="flex justify-between items-center p-3 glass-card rounded-lg">
-                        <label for="notifications-toggle">Nachrichten-Benachrichtigungen</label>
+                        <label for="notifications-toggle">Benachrichtigungston</label>
                         <input type="checkbox" id="notifications-toggle" class="toggle-checkbox">
                     </div>
                 </div>
@@ -1653,7 +1674,10 @@
 
             document.getElementById('change-name-btn').addEventListener('click', showChangeNameModal);
             document.getElementById('change-password-btn').addEventListener('click', showChangePasswordModal);
-            document.getElementById('notifications-toggle').addEventListener('change', toggleNotifications);
+            
+            const notifToggle = document.getElementById('notifications-toggle');
+            notifToggle.checked = currentUserProfile.notificationsEnabled || false;
+            notifToggle.addEventListener('change', toggleNotifications);
         };
 
         const showChangeNameModal = () => {
@@ -1726,32 +1750,22 @@
         };
         
         const toggleNotifications = async (e) => {
-            if (e.target.checked) {
-                if (Notification.permission === "granted") {
-                    showToast("Benachrichtigungen sind bereits aktiviert.", "info");
-                } else if (Notification.permission !== "denied") {
-                    const permission = await Notification.requestPermission();
-                    if (permission === "granted") {
-                        showToast("Benachrichtigungen aktiviert!", "success");
-                        new Notification("Danke!", { body: "Du wirst jetzt über neue Nachrichten informiert." });
-                    } else {
-                        showToast("Benachrichtigungen wurden blockiert.", "error");
-                        e.target.checked = false;
-                    }
+            const enabled = e.target.checked;
+            try {
+                await updateDoc(doc(db, 'users', currentUser.uid), { notificationsEnabled: enabled });
+                if (enabled) {
+                    showToast("Benachrichtigungstöne aktiviert!", "success");
                 } else {
-                    showToast("Benachrichtigungen sind in den Browsereinstellungen blockiert.", "error");
-                    e.target.checked = false;
+                    showToast("Benachrichtigungstöne deaktiviert.", "info");
                 }
-            } else {
-                showToast("Benachrichtigungen deaktiviert.", "info");
+            } catch (error) {
+                showToast("Fehler beim Speichern der Einstellung.", "error");
             }
         };
 
-        const showNotification = (title, body) => {
-            if (Notification.permission !== "granted") return;
+        const showNotificationSound = () => {
+            if (!currentUserProfile.notificationsEnabled) return;
             
-            new Notification(title, { body });
-
             if (!notificationSound) {
                 notificationSound = new Tone.Synth({
                     oscillator: { type: 'sine' },

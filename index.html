@@ -144,6 +144,14 @@
         <p id="toast-message"></p>
     </div>
 
+    <!-- Message Context Menu -->
+    <div id="message-context-menu" class="hidden absolute z-[60] glass-card p-1 rounded-lg">
+        <button id="delete-context-btn" class="flex items-center gap-2 text-sm text-red-400 hover:bg-red-500/20 px-3 py-1 rounded-md w-full">
+            <i data-lucide="trash-2" class="w-4 h-4"></i>
+            <span>Löschen</span>
+        </button>
+    </div>
+
 
     <!-- Firebase SDKs -->
     <script type="module">
@@ -196,6 +204,7 @@
         let typingTimeout = null;
         let unsubscribeChatListener = null;
         let unsubscribeTypingListener = null;
+        let longPressTimer = null;
 
         // --- HELPER & MODAL FUNCTIONS ---
         const showLoader = (text = 'Lade...') => {
@@ -1148,46 +1157,67 @@
                     messageEl.className = `w-full flex group ${isSender ? 'justify-end' : 'justify-start'}`;
                     
                     let readReceipt = '';
-                    if (isSender) {
+                    if (isSender && !msg.isDeleted) {
                         if (msg.readBy && msg.readBy.length > 1) {
-                            readReceipt = `<i data-lucide="check-check" class="w-4 h-4 text-blue-400"></i>`; // Gelesen
+                            readReceipt = `<i data-lucide="check-check" class="w-4 h-4 text-blue-400"></i>`;
                         } else {
-                            readReceipt = `<i data-lucide="check" class="w-4 h-4 text-gray-500"></i>`; // Gesendet
+                            readReceipt = `<i data-lucide="check" class="w-4 h-4 text-gray-500"></i>`;
                         }
                     }
 
-                    const canDelete = isSender || isGroupOwner;
-                    const deleteButton = canDelete 
-                        ? `<button class="delete-message-btn text-gray-500 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity" data-msg-id="${msg.id}"><i data-lucide="trash-2" class="w-3 h-3"></i></button>` 
-                        : `<div class="w-4"></div>`; // Placeholder to keep alignment
+                    const canDelete = (isSender || isGroupOwner) && !msg.isDeleted;
+                    
+                    const messageContentHTML = msg.isDeleted
+                        ? `<p class="text-gray-500 italic">Diese Nachricht wurde gelöscht.</p>`
+                        : `<p class="text-white break-words">${msg.text}</p>
+                           <div class="flex items-center justify-end gap-1 mt-1">
+                               <p class="text-xs text-gray-400">${new Date(msg.timestamp?.toDate()).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</p>
+                               ${readReceipt}
+                           </div>`;
+
+                    const senderNameHTML = !isSender && type === 'group' && !msg.isDeleted
+                        ? `<p class="text-xs font-bold text-blue-300">${msg.senderName}</p>`
+                        : '';
+                    
+                    const messageBoxClass = isSender 
+                        ? 'bg-blue-700' 
+                        : (msg.isDeleted ? 'bg-slate-800/50' : 'bg-slate-700');
 
                     messageEl.innerHTML = `
                         <div class="flex items-end gap-2 ${isSender ? 'flex-row-reverse' : 'flex-row'}">
-                            <div class="max-w-xs lg:max-w-md px-3 py-2 rounded-lg ${isSender ? 'bg-blue-700' : 'bg-slate-700'}">
-                                ${!isSender && type === 'group' ? `<p class="text-xs font-bold text-blue-300">${msg.senderName}</p>` : ''}
-                                <p class="text-white break-words">${msg.text}</p>
-                                <div class="flex items-center justify-end gap-1 mt-1">
-                                    <p class="text-xs text-gray-400">${new Date(msg.timestamp?.toDate()).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</p>
-                                    ${readReceipt}
-                                </div>
+                            <div class="max-w-xs lg:max-w-md px-3 py-2 rounded-lg ${messageBoxClass}">
+                                ${senderNameHTML}
+                                ${messageContentHTML}
                             </div>
-                            ${deleteButton}
                         </div>
                     `;
+                    
+                    if (canDelete) {
+                        const messageBox = messageEl.querySelector('.max-w-xs');
+                        const handlePressStart = (e) => {
+                            const targetElement = e.currentTarget;
+                            clearTimeout(longPressTimer);
+                            longPressTimer = setTimeout(() => {
+                                showMessageContextMenu(targetElement, chatId, msg.id, type);
+                            }, 500);
+                        };
+                        const handlePressEnd = () => clearTimeout(longPressTimer);
+
+                        messageBox.addEventListener('mousedown', handlePressStart);
+                        messageBox.addEventListener('mouseup', handlePressEnd);
+                        messageBox.addEventListener('mouseleave', handlePressEnd);
+                        messageBox.addEventListener('touchstart', (e) => {
+                            e.preventDefault();
+                            handlePressStart(e);
+                        });
+                        messageBox.addEventListener('touchend', handlePressEnd);
+                    }
+
                     messagesContainer.appendChild(messageEl);
-                    if (!isSender && (!msg.readBy || !msg.readBy.includes(currentUser.uid))) {
+
+                    if (!isSender && !msg.isDeleted && (!msg.readBy || !msg.readBy.includes(currentUser.uid))) {
                         updateDoc(docSnap.ref, { readBy: arrayUnion(currentUser.uid) });
                     }
-                });
-
-                // Add listeners for delete buttons
-                messagesContainer.querySelectorAll('.delete-message-btn').forEach(btn => {
-                    btn.addEventListener('click', () => {
-                        const messageId = btn.dataset.msgId;
-                        showConfirmationModal('Möchtest du diese Nachricht wirklich löschen?', () => {
-                            deleteMessage(chatId, messageId, type);
-                        });
-                    });
                 });
 
                 lucide.createIcons();
@@ -1233,13 +1263,47 @@
         };
         
         // --- Chat Management Functions ---
+        const showMessageContextMenu = (targetElement, chatId, messageId, type) => {
+            const menu = document.getElementById('message-context-menu');
+            const deleteBtn = document.getElementById('delete-context-btn');
+            
+            // Position the menu
+            const rect = targetElement.getBoundingClientRect();
+            menu.style.top = `${rect.top - menu.offsetHeight - 5}px`;
+            menu.style.left = `${rect.left}px`;
+            menu.classList.remove('hidden');
+
+            const hideMenu = () => {
+                menu.classList.add('hidden');
+                document.removeEventListener('click', hideMenuOnClickOutside);
+            }
+            
+            const hideMenuOnClickOutside = (event) => {
+                if (!menu.contains(event.target)) {
+                    hideMenu();
+                }
+            };
+            
+            deleteBtn.onclick = () => {
+                hideMenu();
+                showConfirmationModal('Möchtest du diese Nachricht wirklich löschen?', () => {
+                    deleteMessage(chatId, messageId, type);
+                });
+            };
+
+            setTimeout(() => document.addEventListener('click', hideMenuOnClickOutside), 0);
+        };
+
         const deleteMessage = async (chatId, messageId, type) => {
             const collectionPath = type === 'group' ? `groups/${chatId}/messages` : `directMessages/${chatId}/messages`;
+            const messageRef = doc(db, collectionPath, messageId);
             try {
-                await deleteDoc(doc(db, collectionPath, messageId));
-                // No toast needed for a clean UI
+                await updateDoc(messageRef, {
+                    text: "Diese Nachricht wurde gelöscht.",
+                    isDeleted: true
+                });
             } catch (error) {
-                console.error("Error deleting message:", error);
+                console.error("Error 'deleting' message:", error);
                 showToast("Nachricht konnte nicht gelöscht werden.", "error");
             }
         };
@@ -1694,7 +1758,6 @@
                 unsubscribeChatListener = null;
             }
             if (unsubscribeTypingListener) {
-                unsubscribeTypingListener();
                 unsubscribeTypingListener = null;
             }
             closeModal(genericModal);

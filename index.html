@@ -1679,6 +1679,11 @@
                     if (user.id === currentUser.uid) return;
                     
                     const crownIcon = user.role === 'founder' || user.role === 'admin' ? `<i data-lucide="crown" class="w-5 h-5 text-yellow-400"></i>` : '';
+                    let adminDateHtml = '';
+                    if (user.role === 'admin' && user.promotedToAdminAt) {
+                        const date = user.promotedToAdminAt.toDate().toLocaleDateString('de-DE');
+                        adminDateHtml = `<p class="text-xs text-gray-400 mt-1">Admin seit: ${date}</p>`;
+                    }
                     
                     let adminButtonHtml = '';
                     if (user.role === 'founder') {
@@ -1702,6 +1707,7 @@
                                     <div>
                                         <p class="font-bold text-lg flex items-center gap-2">${user.displayName} ${crownIcon}</p>
                                         <p class="text-sm text-gray-400">${user.email}</p>
+                                        ${adminDateHtml}
                                     </div>
                                 </div>
                                 <div class="text-right">
@@ -1728,11 +1734,19 @@
         const toggleAdminRole = async (userId, currentRole) => {
             if (currentUserProfile.role !== 'founder') { showToast('Nur der Gründer kann Rollen ändern.', 'error'); return; }
             const newRole = currentRole === 'admin' ? 'user' : 'admin';
+            const updateData = { role: newRole };
+            if (newRole === 'admin') {
+                updateData.promotedToAdminAt = serverTimestamp();
+            } else {
+                updateData.promotedToAdminAt = null;
+            }
+            
             showLoader('Rolle wird aktualisiert...');
             try {
                 const userRef = doc(db, `users/${userId}`);
-                await updateDoc(userRef, { role: newRole });
+                await updateDoc(userRef, updateData);
                 showToast('Benutzerrolle aktualisiert.', 'success');
+                showAdminPanel(); // Refresh the panel to show the date
             } catch (error) {
                 showToast(`Fehler: ${error.message}`, 'error');
             } finally {

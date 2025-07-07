@@ -938,6 +938,8 @@
             });
         };
 
+        const getChatRoomId = (uid1, uid2) => [uid1, uid2].sort().join('_');
+
         const openDirectChat = (friendId, friendName) => {
             const chatRoomId = getChatRoomId(currentUser.uid, friendId);
             openChat(chatRoomId, friendName, 'direct');
@@ -1283,7 +1285,6 @@
         document.getElementById('close-auth-modal').addEventListener('click', () => closeModal(authModal));
         document.getElementById('close-chats-friends-modal').addEventListener('click', () => closeModal(chatsFriendsModal));
         document.getElementById('close-generic-modal').addEventListener('click', () => {
-            // FIX: Ensure chat listeners are always cleaned up when the generic modal closes
             if (unsubscribeChatListener) unsubscribeChatListener();
             if (unsubscribeTypingListener) unsubscribeTypingListener();
             closeModal(genericModal);

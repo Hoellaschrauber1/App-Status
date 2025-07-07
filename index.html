@@ -842,9 +842,9 @@
             list.innerHTML = `<div class="loader mx-auto"></div>`;
 
             // Fetch groups user is a member of
-            const memberGroupsQuery = query(collection(db, 'groups'), where('members', 'array-contains', currentUser.uid));
+            const memberGroupsQuery = query(collection(db, 'groups'), where('members', 'array-contains', currentUser.uid), where('isDeleted', '==', false));
             // Fetch public groups
-            const publicGroupsQuery = query(collection(db, 'groups'), where('isPublic', '==', true));
+            const publicGroupsQuery = query(collection(db, 'groups'), where('isPublic', '==', true), where('isDeleted', '==', false));
             // Fetch DMs
             const dmsQuery = query(collection(db, 'directMessages'), where('members', 'array-contains', currentUser.uid));
 
@@ -950,38 +950,43 @@
             modalFooter.innerHTML = '';
             openModal(genericModal);
 
-            const usersRef = collection(db, "users");
-            const allUsersSnapshot = await getDocs(usersRef);
-            const allUsers = allUsersSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            try {
+                const usersRef = collection(db, "users");
+                const allUsersSnapshot = await getDocs(usersRef);
+                const allUsers = allUsersSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
-            const renderUserList = (usersToRender) => {
-                const resultsContainer = document.getElementById('search-results');
-                resultsContainer.innerHTML = '';
-                usersToRender.forEach((user) => {
-                    if (user.id === currentUser.uid) return;
-                    const isFriend = currentUserProfile.friends.includes(user.id);
-                    const userCard = document.createElement('div');
-                    userCard.className = 'glass-card p-3 flex items-center justify-between';
-                    userCard.innerHTML = `<div class="flex items-center gap-3"><img src="${user.photoURL || `https://placehold.co/40x40/1E293B/FFFFFF?text=${user.displayName.charAt(0)}`}" class="w-10 h-10 rounded-full object-cover"><div><p class="font-semibold text-white">${user.displayName}</p><p class="text-xs text-gray-500">${user.email}</p></div></div><button data-id="${user.id}" class="add-friend-search-btn btn-secondary text-sm" ${isFriend ? 'disabled' : ''}>${isFriend ? 'Freund' : 'Hinzufügen'}</button>`;
-                    resultsContainer.appendChild(userCard);
-                });
-                resultsContainer.querySelectorAll('.add-friend-search-btn').forEach(btn => {
-                    btn.addEventListener('click', async () => {
-                        const targetUserId = btn.dataset.id;
-                        btn.disabled = true;
-                        btn.textContent = 'Angefragt';
-                        await sendFriendRequest(targetUserId);
+                const renderUserList = (usersToRender) => {
+                    const resultsContainer = document.getElementById('search-results');
+                    resultsContainer.innerHTML = '';
+                    usersToRender.forEach((user) => {
+                        if (user.id === currentUser.uid) return;
+                        const isFriend = currentUserProfile.friends.includes(user.id);
+                        const userCard = document.createElement('div');
+                        userCard.className = 'glass-card p-3 flex items-center justify-between';
+                        userCard.innerHTML = `<div class="flex items-center gap-3"><img src="${user.photoURL || `https://placehold.co/40x40/1E293B/FFFFFF?text=${user.displayName.charAt(0)}`}" class="w-10 h-10 rounded-full object-cover"><div><p class="font-semibold text-white">${user.displayName}</p><p class="text-xs text-gray-500">${user.email}</p></div></div><button data-id="${user.id}" class="add-friend-search-btn btn-secondary text-sm" ${isFriend ? 'disabled' : ''}>${isFriend ? 'Freund' : 'Hinzufügen'}</button>`;
+                        resultsContainer.appendChild(userCard);
                     });
+                    resultsContainer.querySelectorAll('.add-friend-search-btn').forEach(btn => {
+                        btn.addEventListener('click', async () => {
+                            const targetUserId = btn.dataset.id;
+                            btn.disabled = true;
+                            btn.textContent = 'Angefragt';
+                            await sendFriendRequest(targetUserId);
+                        });
+                    });
+                };
+
+                renderUserList(allUsers); // Initially display all users
+
+                document.getElementById('search-user-input').addEventListener('keyup', (e) => {
+                    const searchTerm = e.target.value.trim().toLowerCase();
+                    const filteredUsers = allUsers.filter(user => user.displayName.toLowerCase().includes(searchTerm));
+                    renderUserList(filteredUsers);
                 });
-            };
-
-            renderUserList(allUsers); // Initially display all users
-
-            document.getElementById('search-user-input').addEventListener('keyup', (e) => {
-                const searchTerm = e.target.value.trim().toLowerCase();
-                const filteredUsers = allUsers.filter(user => user.displayName.toLowerCase().includes(searchTerm));
-                renderUserList(filteredUsers);
-            });
+            } catch (error) {
+                console.error("Error fetching users for friend search:", error);
+                modalContent.innerHTML = `<div class="text-center p-4"><p class="text-red-400">Benutzersuche fehlgeschlagen.</p><p class="text-gray-400 mt-2 text-sm">Dies liegt wahrscheinlich an den Firestore-Sicherheitsregeln. Administratoren benötigen eine "list"-Berechtigung für die "users"-Sammlung, um alle Benutzer anzuzeigen.</p></div>`;
+            }
         };
         const sendFriendRequest = async (targetUserId) => { try { const targetUserRef = doc(db, `users/${targetUserId}`); const currentUserRef = doc(db, `users/${currentUser.uid}`); const batch = writeBatch(db); batch.update(targetUserRef, { friendRequestsReceived: arrayUnion(currentUser.uid) }); batch.update(currentUserRef, { friendRequestsSent: arrayUnion(targetUserId) }); await batch.commit(); showToast('Freundschaftsanfrage gesendet!', 'success'); } catch (error) { showToast(`Fehler: ${error.message}`, 'error'); } };
         const displayFriendRequests = async (requestUids) => {
@@ -1043,7 +1048,24 @@
                 const description = document.getElementById('group-desc').value;
                 if (!name || !description) { showToast('Bitte fülle alle Felder aus.', 'error'); return; }
                 showLoader('Gruppe wird erstellt...');
-                try { await addDoc(collection(db, 'groups'), { name, description, ownerId: currentUser.uid, members: [currentUser.uid], createdAt: serverTimestamp(), isPublic: false }); showToast('Gruppe erfolgreich erstellt!', 'success'); closeModal(genericModal); renderChatsTab(); } catch (error) { showToast(`Fehler: ${error.message}`, 'error'); } finally { hideLoader(); }
+                try { 
+                    await addDoc(collection(db, 'groups'), { 
+                        name, 
+                        description, 
+                        ownerId: currentUser.uid, 
+                        members: [currentUser.uid], 
+                        createdAt: serverTimestamp(), 
+                        isPublic: false,
+                        isDeleted: false 
+                    }); 
+                    showToast('Gruppe erfolgreich erstellt!', 'success'); 
+                    closeModal(genericModal); 
+                    renderChatsTab(); 
+                } catch (error) { 
+                    showToast(`Fehler: ${error.message}`, 'error'); 
+                } finally { 
+                    hideLoader(); 
+                }
             });
         };
 
@@ -1326,19 +1348,14 @@
         };
 
         const deleteGroup = async (groupId, groupName) => {
-            showConfirmationModal(`Möchtest du die Gruppe "${groupName}" wirklich LÖSCHEN? Alle Nachrichten gehen verloren.`, async () => {
+            showConfirmationModal(`Möchtest du die Gruppe "${groupName}" wirklich löschen?`, async () => {
                 showLoader("Lösche Gruppe...");
                 try {
-                    // Delete all messages in the subcollection
-                    const messagesRef = collection(db, `groups/${groupId}/messages`);
-                    const messagesSnap = await getDocs(messagesRef);
-                    const batch = writeBatch(db);
-                    messagesSnap.forEach(doc => batch.delete(doc.ref));
-                    await batch.commit();
-                    
-                    // Delete the group itself
-                    await deleteDoc(doc(db, 'groups', groupId));
-
+                    const groupRef = doc(db, 'groups', groupId);
+                    await updateDoc(groupRef, {
+                        isDeleted: true,
+                        members: []
+                    });
                     showToast(`Gruppe "${groupName}" wurde gelöscht.`, "success");
                     closeModal(genericModal);
                     renderChatsTab();
@@ -1649,8 +1666,9 @@
             modalFooter.innerHTML = '';
             openModal(genericModal);
             
-            const usersRef = collection(db, "users");
-            onSnapshot(usersRef, (querySnapshot) => {
+            try {
+                const usersRef = collection(db, "users");
+                const querySnapshot = await getDocs(usersRef);
                 let userCardsHtml = '';
                 querySnapshot.forEach(doc => {
                     const user = {id: doc.id, ...doc.data()};
@@ -1697,7 +1715,10 @@
                 lucide.createIcons();
                 document.querySelectorAll('.toggle-admin-btn').forEach(btn => { btn.addEventListener('click', () => toggleAdminRole(btn.dataset.id, btn.dataset.role)); });
                 document.querySelectorAll('.toggle-ban-btn').forEach(btn => { btn.addEventListener('click', () => toggleBanStatus(btn.dataset.id, btn.dataset.banned === 'true')); });
-            });
+            } catch (error) {
+                console.error("Error fetching users for admin panel:", error);
+                modalContent.innerHTML = `<div class="text-center p-4"><p class="text-red-400">Fehler beim Laden der Benutzerliste.</p><p class="text-gray-400 mt-2 text-sm">Dies liegt wahrscheinlich an den Firestore-Sicherheitsregeln. Administratoren benötigen eine "list"-Berechtigung für die "users"-Sammlung, um alle Benutzer anzuzeigen.</p></div>`;
+            }
         };
         
         const toggleAdminRole = async (userId, currentRole) => {
@@ -1758,6 +1779,7 @@
                 unsubscribeChatListener = null;
             }
             if (unsubscribeTypingListener) {
+                unsubscribeTypingListener();
                 unsubscribeTypingListener = null;
             }
             closeModal(genericModal);

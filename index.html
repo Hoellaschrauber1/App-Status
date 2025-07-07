@@ -17,6 +17,9 @@
     <!-- Tone.js for sound effects -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
 
+    <!-- Emoji Picker Library -->
+    <script type="module" src="https://cdn.jsdelivr.net/npm/emoji-picker-element@^1/index.js"></script>
+
     <style>
         /* Custom styles for a modern, gaming-inspired look */
         body {
@@ -155,6 +158,11 @@
         </button>
     </div>
 
+    <!-- **MODIFIZIERT: Emoji & GIF Picker Popover zentriert** -->
+    <div id="chat-picker-popover" class="hidden fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[60] glass-card p-2 rounded-lg w-full max-w-sm">
+        <!-- Content will be injected by JS -->
+    </div>
+
 
     <!-- Firebase SDKs -->
     <script type="module">
@@ -189,6 +197,10 @@
         
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'fortnite-social-app';
 
+        // --- GIPHY API KEY ---
+        const GIPHY_API_KEY = 'BAE8RypYNwugJzhT1oMmqbWMHujifiuf';
+
+
         // --- DOM ELEMENT REFERENCES ---
         const mainContent = document.getElementById('main-content');
         const headerTitle = document.getElementById('header-title');
@@ -198,6 +210,7 @@
         const authModal = document.getElementById('auth-modal');
         const chatsFriendsModal = document.getElementById('chats-friends-modal');
         const genericModal = document.getElementById('generic-modal');
+        const pickerPopover = document.getElementById('chat-picker-popover');
         
         // --- GLOBAL STATE ---
         let currentUser = null;
@@ -209,8 +222,10 @@
         let unsubscribeTypingListener = null;
         let longPressTimer = null;
         let activeChatId = null;
+        let activeChatType = null;
         let notificationSound;
         let previousUnreadCount = 0;
+        let activePicker = null; // 'emoji' or 'gif'
 
         // --- HELPER & MODAL FUNCTIONS ---
         const showLoader = (text = 'Lade...') => {
@@ -297,7 +312,6 @@
                     if (docSnap.exists()) {
                         currentUserProfile = { id: docSnap.id, ...docSnap.data() };
                         
-                        // Handle notifications based on unread chats
                         const unreadChats = currentUserProfile.unreadChats || [];
                         const badge = document.getElementById('chat-notification-badge');
                         if (badge) {
@@ -547,7 +561,19 @@
 
                 await updateProfile(tempUser, { displayName });
                 const userDocRef = doc(db, `users/${tempUser.uid}`);
-                await setDoc(userDocRef, { uid: tempUser.uid, displayName, email, role, createdAt: serverTimestamp(), photoURL: '', friends: [], banned: false, banCount: 0, bannedBy: null });
+                await setDoc(userDocRef, { 
+                    uid: tempUser.uid, 
+                    displayName, 
+                    email, 
+                    role, 
+                    createdAt: serverTimestamp(), 
+                    photoURL: '', 
+                    friends: [], 
+                    banned: false, 
+                    banCount: 0, 
+                    bannedBy: null,
+                    unreadChats: [] 
+                });
                 
                 if (isFounder) {
                     await setDoc(metadataRef, { founderId: tempUser.uid });
@@ -846,8 +872,16 @@
         };
 
         // --- CHATS & FRIENDS MODAL ---
-        const openChatsAndFriendsModal = () => {
-            document.getElementById('chat-notification-badge').classList.add('hidden');
+        const openChatsAndFriendsModal = async () => {
+            if (currentUser) {
+                try {
+                    const userRef = doc(db, 'users', currentUser.uid);
+                    await updateDoc(userRef, { unreadChats: [] });
+                } catch (error) {
+                    console.error("Error clearing unread chats:", error);
+                }
+            }
+            
             openModal(chatsFriendsModal);
             renderChatsTab();
             chatsFriendsModal.querySelectorAll('.tab-btn').forEach(btn => {
@@ -869,7 +903,6 @@
 
             const allChats = new Map();
             
-            // --- Founder sees all groups, others see their own + public ---
             if (currentUserProfile.role === 'founder') {
                 const allGroupsQuery = query(collection(db, 'groups'), where('isDeleted', '==', false));
                 const groupSnaps = await getDocs(allGroupsQuery);
@@ -889,7 +922,6 @@
                 });
             }
             
-            // Fetch DMs (remains the same for all users)
             const dmsQuery = query(collection(db, 'directMessages'), where('members', 'array-contains', currentUser.uid));
             const dmsSnap = await getDocs(dmsQuery);
             
@@ -940,13 +972,12 @@
                 }
                 list.appendChild(chatItem);
             });
-            // Add event listeners after generating all items
             list.querySelectorAll('.open-btn[data-group-id]').forEach(btn => btn.addEventListener('click', (e) => openGroupChat(e.currentTarget.dataset.groupId)));
             list.querySelectorAll('.join-btn[data-group-id]').forEach(btn => btn.addEventListener('click', async (e) => {
                 const groupId = e.currentTarget.dataset.groupId;
                 await updateDoc(doc(db, 'groups', groupId), { members: arrayUnion(currentUser.uid) });
                 showToast("Gruppe beigetreten!", "success");
-                renderChatsTab(); // Refresh the list
+                renderChatsTab();
             }));
             list.querySelectorAll('button[data-friend-id]').forEach(btn => btn.addEventListener('click', (e) => openDirectChat(e.currentTarget.dataset.friendId, e.currentTarget.dataset.friendName)));
 
@@ -1006,7 +1037,7 @@
                     });
                 };
 
-                renderUserList(allUsers); // Initially display all users
+                renderUserList(allUsers); 
 
                 document.getElementById('search-user-input').addEventListener('keyup', (e) => {
                     const searchTerm = e.target.value.trim().toLowerCase();
@@ -1118,7 +1149,13 @@
         };
 
         const openChat = async (chatId, chatName, type, groupData = null) => {
+            if (currentUser) {
+                const userRef = doc(db, 'users', currentUser.uid);
+                await updateDoc(userRef, { unreadChats: arrayRemove(chatId) });
+            }
+
             activeChatId = chatId;
+            activeChatType = type;
             if (unsubscribeChatListener) unsubscribeChatListener();
             if (unsubscribeTypingListener) unsubscribeTypingListener();
 
@@ -1129,15 +1166,19 @@
 
             modalTitle.textContent = chatName;
             modalContent.innerHTML = `<div id="chat-messages" class="h-96 overflow-y-auto flex flex-col-reverse p-2 space-y-2 space-y-reverse"></div>`;
+            
             modalFooter.innerHTML = `
-                <div id="typing-indicator" class="text-sm text-gray-400 h-5 italic"></div>
-                <form id="chat-form" class="flex gap-2">
-                    <input id="chat-input" class="flex-grow p-2 bg-slate-800 border border-slate-700 rounded-lg" placeholder="Nachricht schreiben..." autocomplete="off">
-                    <button type="submit" class="btn-primary"><i data-lucide="send"></i></button>
+                <div id="typing-indicator" class="text-sm text-gray-400 h-5 italic mb-1"></div>
+                <form id="chat-form" class="flex gap-2 items-center">
+                    <button type="button" id="gif-btn" class="btn-secondary p-2"><i data-lucide="file-image"></i></button>
+                    <div class="relative flex-grow">
+                        <input id="chat-input" class="w-full p-2 bg-slate-800 border border-slate-700 rounded-lg pr-10" placeholder="Nachricht schreiben..." autocomplete="off">
+                        <button type="button" id="emoji-btn" class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white"><i data-lucide="smile"></i></button>
+                    </div>
+                    <button type="submit" class="btn-primary p-2"><i data-lucide="send"></i></button>
                 </form>
             `;
             
-            // --- Group Settings Dropdown ---
             modalHeaderActions.innerHTML = '';
             if (type === 'group' && groupData) {
                 const isOwner = groupData.ownerId === currentUser.uid;
@@ -1182,6 +1223,10 @@
             lucide.createIcons();
             openModal(genericModal);
             
+            // **MODIFIZIERT: Event Listener für Picker-Buttons**
+            document.getElementById('emoji-btn').addEventListener('click', () => togglePicker('emoji'));
+            document.getElementById('gif-btn').addEventListener('click', () => togglePicker('gif'));
+
             const collectionPath = type === 'group' ? `groups/${chatId}/messages` : `directMessages/${chatId}/messages`;
             const chatRoomRef = doc(db, type === 'group' ? 'groups' : 'directMessages', chatId);
 
@@ -1200,22 +1245,14 @@
             const messagesContainer = document.getElementById('chat-messages');
             const messagesQuery = query(collection(db, collectionPath), orderBy('timestamp', 'desc'));
             unsubscribeChatListener = onSnapshot(messagesQuery, (snapshot) => {
-                snapshot.docChanges().forEach((change) => {
-                    if (change.type === "added") {
-                        const msg = {id: change.doc.id, ...change.doc.data()};
-                        if (msg.senderId !== currentUser.uid && document.hidden) {
-                            showNotification(`Neue Nachricht von ${msg.senderName}`, msg.text);
-                        }
-                    }
-                });
-
                 messagesContainer.innerHTML = '';
                 snapshot.forEach(docSnap => {
                     const msg = {id: docSnap.id, ...docSnap.data()};
                     const messageEl = document.createElement('div');
                     const isSender = msg.senderId === currentUser.uid;
                     const isGroupOwner = type === 'group' && groupData && groupData.ownerId === currentUser.uid;
-
+                    
+                    // **MODIFIZIERT: Emoji-Styling entfernt**
                     messageEl.className = `w-full flex group ${isSender ? 'justify-end' : 'justify-start'}`;
                     
                     let readReceipt = '';
@@ -1229,27 +1266,35 @@
 
                     const canDelete = (isSender || isGroupOwner) && !msg.isDeleted;
                     
-                    const messageContentHTML = msg.isDeleted
-                        ? `<p class="text-gray-500 italic">Diese Nachricht wurde gelöscht.</p>`
-                        : `<p class="text-white break-words">${msg.text}</p>
-                           <div class="flex items-center justify-end gap-1 mt-1">
-                               <p class="text-xs text-gray-400">${new Date(msg.timestamp?.toDate()).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</p>
-                               ${readReceipt}
-                           </div>`;
+                    let messageContentHTML = '';
+                    if (msg.isDeleted) {
+                        messageContentHTML = `<p class="text-gray-500 italic">Diese Nachricht wurde gelöscht.</p>`;
+                    } else if (msg.type === 'gif') {
+                        messageContentHTML = `<img src="${msg.content}" alt="GIF" class="rounded-lg max-w-full h-auto mt-1">`;
+                    } else { 
+                        messageContentHTML = `<p class="text-white break-words">${msg.text || ''}</p>`;
+                    }
+                    
+                    const timestampHTML = !msg.isDeleted ? `
+                        <div class="flex items-center justify-end gap-1 mt-1">
+                            <p class="text-xs text-gray-400">${new Date(msg.timestamp?.toDate()).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</p>
+                            ${readReceipt}
+                        </div>` : '';
 
                     const senderNameHTML = !isSender && type === 'group' && !msg.isDeleted
                         ? `<p class="text-xs font-bold text-blue-300">${msg.senderName}</p>`
                         : '';
                     
                     const messageBoxClass = isSender 
-                        ? 'bg-blue-700' 
-                        : (msg.isDeleted ? 'bg-slate-800/50' : 'bg-slate-700');
+                        ? (msg.type === 'gif' ? 'bg-transparent' : 'bg-blue-700')
+                        : (msg.isDeleted ? 'bg-slate-800/50' : (msg.type === 'gif' ? 'bg-transparent' : 'bg-slate-700'));
 
                     messageEl.innerHTML = `
                         <div class="flex items-end gap-2 ${isSender ? 'flex-row-reverse' : 'flex-row'}">
                             <div class="max-w-xs lg:max-w-md px-3 py-2 rounded-lg ${messageBoxClass}">
                                 ${senderNameHTML}
                                 ${messageContentHTML}
+                                ${timestampHTML}
                             </div>
                         </div>
                     `;
@@ -1315,7 +1360,28 @@
                 if (text) {
                     chatInput.value = '';
                     try {
-                        await addDoc(collection(db, collectionPath), { text, senderId: currentUser.uid, senderName: currentUserProfile.displayName, timestamp: serverTimestamp(), readBy: [currentUser.uid] });
+                        await addDoc(collection(db, collectionPath), { 
+                            text, 
+                            type: 'text',
+                            senderId: currentUser.uid, 
+                            senderName: currentUserProfile.displayName, 
+                            timestamp: serverTimestamp(), 
+                            readBy: [currentUser.uid] 
+                        });
+
+                        const chatDocSnap = await getDoc(chatRoomRef);
+                        if (chatDocSnap.exists()) {
+                            const members = chatDocSnap.data().members;
+                            const batch = writeBatch(db);
+                            members.forEach(memberId => {
+                                if (memberId !== currentUser.uid) {
+                                    const userRef = doc(db, 'users', memberId);
+                                    batch.update(userRef, { unreadChats: arrayUnion(chatId) });
+                                }
+                            });
+                            await batch.commit();
+                        }
+
                     } catch (error) {
                         console.error("Error sending message:", error);
                         showToast("Nachricht konnte nicht gesendet werden.", "error");
@@ -1329,7 +1395,6 @@
             const menu = document.getElementById('message-context-menu');
             const deleteBtn = document.getElementById('delete-context-btn');
             
-            // Position the menu
             const rect = targetElement.getBoundingClientRect();
             menu.style.top = `${rect.top - menu.offsetHeight - 5}px`;
             menu.style.left = `${rect.left}px`;
@@ -1362,6 +1427,8 @@
             try {
                 await updateDoc(messageRef, {
                     text: "Diese Nachricht wurde gelöscht.",
+                    content: null,
+                    type: 'text',
                     isDeleted: true
                 });
             } catch (error) {
@@ -1414,7 +1481,7 @@
             try {
                 await updateDoc(doc(db, 'groups', groupId), { isPublic: newStatus });
                 showToast(`Gruppe ist nun ${newStatus ? 'öffentlich' : 'privat'}.`, "success");
-                closeModal(genericModal); // Close and reopen to refresh the settings UI
+                closeModal(genericModal); 
                 openGroupChat(groupId);
             } catch (error) {
                 showToast("Status konnte nicht geändert werden.", "error");
@@ -1439,7 +1506,7 @@
                 modalContent.innerHTML = `<p class="text-gray-500">Du hast keine Freunde zum Einladen.</p>`;
             } else {
                 const inviteList = document.getElementById('invite-list');
-                inviteList.innerHTML = ''; // Clear previous content
+                inviteList.innerHTML = '';
                 for(const friendId of friends) {
                     const userDoc = await getDoc(doc(db, `users/${friendId}`));
                     if (userDoc.exists()) {
@@ -1737,7 +1804,7 @@
                     showLoader("Sende E-Mail...");
                     try {
                         await sendPasswordResetEmail(auth, currentUser.email);
-                        showToast("E-Mail zum Zurücksetzen des Passworts wurde gesendet.", "success");
+                        showToast("E-Mail zum Zurücksetzen des Passworts wurde gesendet. Bitte überprüfe dein Postfach.", "success");
                         closeModal(genericModal);
                     } catch (error) {
                         console.error("Password reset error:", error);
@@ -1776,7 +1843,6 @@
         };
         
         const showAdminPanel = async () => {
-            // Close dropdown if open
             document.getElementById('user-dropdown-logged-in')?.classList.add('hidden');
 
             const modalTitle = document.getElementById('generic-modal-title');
@@ -1864,7 +1930,7 @@
                 const userRef = doc(db, `users/${userId}`);
                 await updateDoc(userRef, updateData);
                 showToast('Benutzerrolle aktualisiert.', 'success');
-                showAdminPanel(); // Refresh the panel to show the date
+                showAdminPanel();
             } catch (error) {
                 showToast(`Fehler: ${error.message}`, 'error');
             } finally {
@@ -1901,6 +1967,135 @@
             }
         };
 
+        // --- EMOJI & GIF PICKER FUNCTIONS ---
+
+        // **MODIFIZIERT: `buttonElement` entfernt**
+        const togglePicker = (type) => {
+            if (activePicker === type) {
+                hidePicker();
+            } else {
+                activePicker = type;
+                pickerPopover.innerHTML = '';
+                pickerPopover.classList.remove('hidden');
+
+                // **MODIFIZIERT: JS-Positionierung entfernt**
+                if (type === 'emoji') {
+                    renderEmojiPicker();
+                } else if (type === 'gif') {
+                    renderGifPicker();
+                }
+            }
+        };
+
+        const hidePicker = () => {
+            if (!pickerPopover.classList.contains('hidden')) {
+                pickerPopover.classList.add('hidden');
+                activePicker = null;
+            }
+        };
+
+        const renderEmojiPicker = () => {
+            const emojiPicker = document.createElement('emoji-picker');
+            emojiPicker.className = 'w-full h-80';
+            pickerPopover.appendChild(emojiPicker);
+            emojiPicker.addEventListener('emoji-click', e => {
+                const chatInput = document.getElementById('chat-input');
+                chatInput.value += e.detail.unicode;
+            });
+        };
+        
+        const renderGifPicker = () => {
+            pickerPopover.innerHTML = `
+                <div class="p-2">
+                    <input id="gif-search-input" type="text" placeholder="GIPHY durchsuchen..." class="w-full p-2 bg-slate-800 border border-slate-700 rounded-lg mb-2">
+                    <div id="gif-results" class="grid grid-cols-3 gap-2 h-72 overflow-y-auto">
+                        <div class="col-span-3 text-center text-gray-400 pt-8">Suche nach GIFs...</div>
+                    </div>
+                </div>
+            `;
+            const searchInput = document.getElementById('gif-search-input');
+            let searchTimeout;
+            searchInput.addEventListener('keyup', () => {
+                clearTimeout(searchTimeout);
+                searchTimeout = setTimeout(() => {
+                    searchGifs(searchInput.value);
+                }, 500);
+            });
+            searchGifs('');
+        };
+
+        const searchGifs = async (query) => {
+            const resultsContainer = document.getElementById('gif-results');
+            if (!resultsContainer) return;
+
+            if (GIPHY_API_KEY === 'DEIN_GIPHY_API_SCHLÜSSEL') {
+                resultsContainer.innerHTML = `<div class="col-span-3 text-center text-red-400 p-4">Bitte füge einen gültigen Giphy API-Schlüssel im Skript hinzu, um GIFs zu suchen.</div>`;
+                return;
+            }
+
+            resultsContainer.innerHTML = `<div class="col-span-3 flex justify-center pt-8"><div class="loader"></div></div>`;
+            
+            const endpoint = query ? `search?q=${encodeURIComponent(query)}` : 'trending?';
+            const url = `https://api.giphy.com/v1/gifs/${endpoint}&api_key=${GIPHY_API_KEY}&limit=30`;
+
+            try {
+                const response = await fetch(url);
+                const json = await response.json();
+                resultsContainer.innerHTML = '';
+                if (json.data && json.data.length > 0) {
+                    json.data.forEach(gif => {
+                        const img = document.createElement('img');
+                        img.src = gif.images.fixed_height_small.url;
+                        img.alt = gif.title;
+                        img.className = 'w-full h-full object-cover rounded-md cursor-pointer hover:opacity-80';
+                        img.onclick = () => sendGifMessage(gif.images.original.url, activeChatId);
+                        resultsContainer.appendChild(img);
+                    });
+                } else {
+                    resultsContainer.innerHTML = `<div class="col-span-3 text-center text-gray-400 pt-8">Keine Ergebnisse gefunden.</div>`;
+                }
+            } catch (error) {
+                console.error("Error fetching GIFs:", error);
+                resultsContainer.innerHTML = `<div class="col-span-3 text-center text-red-400 p-4">Fehler beim Laden der GIFs.</div>`;
+            }
+        };
+
+        const sendGifMessage = async (gifUrl, chatId) => {
+            if (!chatId || !activeChatType) return;
+            const collectionPath = activeChatType === 'group' ? `groups/${chatId}/messages` : `directMessages/${chatId}/messages`;
+            try {
+                await addDoc(collection(db, collectionPath), {
+                    type: 'gif',
+                    content: gifUrl,
+                    text: '[GIF]',
+                    senderId: currentUser.uid,
+                    senderName: currentUserProfile.displayName,
+                    timestamp: serverTimestamp(),
+                    readBy: [currentUser.uid]
+                });
+
+                const chatDocRef = doc(db, activeChatType === 'group' ? 'groups' : 'directMessages', chatId);
+                const chatDocSnap = await getDoc(chatDocRef);
+                if (chatDocSnap.exists()) {
+                    const members = chatDocSnap.data().members;
+                    const batch = writeBatch(db);
+                    members.forEach(memberId => {
+                        if (memberId !== currentUser.uid) {
+                            const userRef = doc(db, 'users', memberId);
+                            batch.update(userRef, { unreadChats: arrayUnion(chatId) });
+                        }
+                    });
+                    await batch.commit();
+                }
+
+                hidePicker();
+            } catch (error) {
+                console.error("Error sending GIF message:", error);
+                showToast("GIF konnte nicht gesendet werden.", "error");
+            }
+        };
+
+
         // --- INITIALIZATION ---
         window.onload = () => {
             lucide.createIcons();
@@ -1917,9 +2112,17 @@
                 unsubscribeChatListener = null;
             }
             if (unsubscribeTypingListener) {
+                unsubscribeTypingListener();
                 unsubscribeTypingListener = null;
             }
+            hidePicker();
             closeModal(genericModal);
+        });
+
+        document.addEventListener('click', (e) => {
+            if (activePicker && !pickerPopover.contains(e.target) && !e.target.closest('#emoji-btn') && !e.target.closest('#gif-btn')) {
+                hidePicker();
+            }
         });
 
     </script>

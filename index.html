@@ -159,7 +159,7 @@
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getStorage, ref, getDownloadURL, uploadBytesResumable, deleteObject } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
         import { getAuth, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, updateProfile, deleteUser, sendEmailVerification, sendPasswordResetEmail } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, getDoc, getDocs, collection, writeBatch, serverTimestamp, query, where, onSnapshot, updateDoc, arrayUnion, arrayRemove, addDoc, orderBy, deleteDoc, increment } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, getDoc, getDocs, collection, writeBatch, serverTimestamp, query, where, onSnapshot, updateDoc, arrayUnion, arrayRemove, addDoc, orderBy, deleteDoc, increment, deleteField } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // --- FIREBASE CONFIGURATION ---
         const firebaseConfig = {
@@ -418,6 +418,13 @@
                     bannerName = bannerDoc.data().displayName;
                 }
             }
+            
+            let appealButtonHTML = '';
+            if (currentUserProfile.hasSubmittedAppeal) {
+                appealButtonHTML = `<p class="mt-4 text-yellow-400">Dein Entbannungsantrag wird geprüft.</p>`;
+            } else {
+                appealButtonHTML = `<button id="appeal-ban-btn" class="btn-primary mt-6">Entbannungsantrag stellen</button>`;
+            }
 
             mainContent.innerHTML = `
             <div class="w-full max-w-2xl space-y-6 mx-auto text-center">
@@ -425,9 +432,14 @@
                     <i data-lucide="gavel" class="w-16 h-16 mx-auto text-red-500 mb-4"></i>
                     <h2 class="text-2xl font-bold">Dein Konto wurde gesperrt</h2>
                     <p class="text-gray-400 mt-2">Du wurdest von <strong>${bannerName}</strong> gesperrt. Du hast keinen Zugriff auf die App-Funktionen.</p>
+                    ${appealButtonHTML}
                 </div>
             </div>`;
             lucide.createIcons();
+
+            if (document.getElementById('appeal-ban-btn')) {
+                document.getElementById('appeal-ban-btn').addEventListener('click', showUnbanAppealModal);
+            }
         };
 
         const showAuthModal = (view = 'login') => {
@@ -1738,7 +1750,7 @@
             if (newRole === 'admin') {
                 updateData.promotedToAdminAt = serverTimestamp();
             } else {
-                updateData.promotedToAdminAt = null;
+                updateData.promotedToAdminAt = deleteField();
             }
             
             showLoader('Rolle wird aktualisiert...');
@@ -1767,6 +1779,7 @@
                 try {
                     await updateDoc(userToModifyRef, { banned: false, bannedBy: null });
                     showToast('Benutzer wurde entsperrt.', 'success');
+                    showAdminPanel();
                 } catch (error) { showToast(`Fehler: ${error.message}`, 'error'); } finally { hideLoader(); }
             } else {
                 showLoader('Benutzer wird gesperrt...');
@@ -1777,6 +1790,7 @@
                         banCount: increment(1)
                     });
                     showToast('Benutzer wurde gesperrt.', 'success');
+                    showAdminPanel();
                 } catch (error) { showToast(`Fehler: ${error.message}`, 'error'); } finally { hideLoader(); }
             }
         };
@@ -1797,7 +1811,6 @@
                 unsubscribeChatListener = null;
             }
             if (unsubscribeTypingListener) {
-                unsubscribeTypingListener();
                 unsubscribeTypingListener = null;
             }
             closeModal(genericModal);

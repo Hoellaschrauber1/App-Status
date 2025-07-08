@@ -440,7 +440,8 @@
             adminContentArea.innerHTML = '<div class="loader"></div>';
 
             try {
-                const reportsQuery = query(collection(db, "reports"), where('status', '==', 'open'), orderBy('timestamp', 'desc'));
+                // FIX: Remove orderBy from the query to avoid needing a composite index.
+                const reportsQuery = query(collection(db, "reports"), where('status', '==', 'open'));
                 const snapshot = await getDocs(reportsQuery);
                 
                 if (snapshot.empty) {
@@ -448,9 +449,12 @@
                     return;
                 }
 
+                // FIX: Sort the results in JavaScript after fetching.
+                const reports = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                reports.sort((a, b) => b.timestamp.toMillis() - a.timestamp.toMillis());
+
                 let reportsHtml = '';
-                for (const reportDoc of snapshot.docs) {
-                    const report = { id: reportDoc.id, ...reportDoc.data() };
+                for (const report of reports) { // FIX: Iterate over the sorted array.
                     reportsHtml += `
                         <div class="glass-card p-4 rounded-lg mb-4">
                             <div class="flex justify-between items-start">

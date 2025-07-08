@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Motion Capture</title>
+    
+    <!-- Tailwind CSS für das Styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Google Fonts für eine saubere Schriftart -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+    
+    <!-- MediaPipe-Bibliotheken für die Pose-Erkennung -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* Versteckt die Steuerelemente des Video-Elements */
+        .input_video {
+            display: none;
+        }
+        /* Stellt sicher, dass der Canvas responsiv ist */
+        .output_canvas {
+            width: 100%;
+            height: auto;
+            max-width: 1280px;
+            max-height: 720px;
+            border-radius: 0.75rem;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        }
+        /* Styling für den Lade-Spinner */
+        .loader {
+            border: 8px solid #f3f3f3;
+            border-radius: 50%;
+            border-top: 8px solid #3498db;
+            width: 60px;
+            height: 60px;
+            animation: spin 2s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white flex flex-col items-center justify-center min-h-screen p-4">
+
+    <div class="w-full max-w-4xl mx-auto text-center">
+        <h1 class="text-4xl md:text-5xl font-bold mb-2">AI Motion Capture</h1>
+        <p class="text-gray-400 mb-6">Bitte erlauben Sie den Zugriff auf die Webcam, um die Pose-Erkennung zu starten.</p>
+
+        <!-- Container für Video und Canvas -->
+        <div class="relative w-full aspect-video bg-gray-800 rounded-xl flex items-center justify-center">
+            <!-- Ladeanzeige -->
+            <div id="loading-spinner" class="loader"></div>
+            
+            <!-- Video-Element (unsichtbar), das den Webcam-Stream empfängt -->
+            <video class="input_video"></video>
+            
+            <!-- Canvas-Element, auf dem das Video und das Skelett gezeichnet werden -->
+            <canvas class="output_canvas absolute top-0 left-0"></canvas>
+        </div>
+        
+        <div class="mt-4 text-sm text-gray-500">
+            Powered by Google MediaPipe
+        </div>
+    </div>
+
+    <script type="module">
+        // === GRUNDEINSTELLUNGEN ===
+        const videoElement = document.getElementsByClassName('input_video')[0];
+        const canvasElement = document.getElementsByClassName('output_canvas')[0];
+        const canvasCtx = canvasElement.getContext('2d');
+        const loadingSpinner = document.getElementById('loading-spinner');
+
+        // Funktion, die aufgerufen wird, wenn die Pose-Erkennung Ergebnisse liefert
+        function onResults(results) {
+            // Verstecke den Lade-Spinner, sobald die ersten Ergebnisse da sind
+            if (loadingSpinner.style.display !== 'none') {
+                loadingSpinner.style.display = 'none';
+            }
+
+            // Setze die Größe des Canvas auf die Größe des Videos
+            canvasElement.width = videoElement.videoWidth;
+            canvasElement.height = videoElement.videoHeight;
+
+            // Zeichne das Videobild auf den Canvas
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            // Zeichne das erkannte Skelett über das Videobild
+            if (results.poseLandmarks) {
+                // Zeichne die Verbindungslinien (z.B. Arme, Beine)
+                drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS,
+                               {color: '#00FF00', lineWidth: 4});
+                // Zeichne die Gelenkpunkte (z.B. Ellbogen, Knie)
+                drawLandmarks(canvasCtx, results.poseLandmarks,
+                              {color: '#FF0000', lineWidth: 2});
+            }
+            canvasCtx.restore();
+        }
+
+        // === MEDIAPIPE POSE INITIALISIERUNG ===
+        const pose = new Pose({locateFile: (file) => {
+            // Gib den Pfad zu den benötigten Modelldateien an
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
+        }});
+
+        // Konfiguriere die Pose-Instanz
+        pose.setOptions({
+            modelComplexity: 1,       // 0=schnell, 1=ausgewogen, 2=genau
+            smoothLandmarks: true,    // Glättet die Bewegung der Punkte zwischen den Frames
+            enableSegmentation: true, // Ermöglicht die Personensegmentierung (Hintergrundtrennung)
+            smoothSegmentation: true, // Glättet die Segmentierungsmaske
+            minDetectionConfidence: 0.5, // Minimale Konfidenz für die Erkennung einer Person
+            minTrackingConfidence: 0.5   // Minimale Konfidenz für das Verfolgen der Person
+        });
+
+        // Verknüpfe die `onResults`-Funktion mit dem Pose-Objekt
+        pose.onResults(onResults);
+
+
+        // === WEBCAM-ZUGRIFF ===
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                // Sende den aktuellen Frame des Videos an das Pose-Modell zur Verarbeitung
+                await pose.send({image: videoElement});
+            },
+            width: 1280,
+            height: 720
+        });
+        
+        // Starte die Kamera
+        camera.start();
+
+    </script>
+</body>
+</html>

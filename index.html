@@ -166,6 +166,10 @@
             <i data-lucide="trash-2" class="w-4 h-4"></i>
             <span>Löschen</span>
         </button>
+        <button id="report-context-btn" class="flex items-center gap-2 text-sm text-yellow-400 hover:bg-yellow-500/20 px-3 py-1 rounded-md w-full">
+            <i data-lucide="flag" class="w-4 h-4"></i>
+            <span>Melden</span>
+        </button>
     </div>
 
     <!-- Emoji & GIF Picker Popover -->
@@ -299,6 +303,274 @@
             openModal(genericModal);
             document.getElementById('confirm-ok-btn').onclick = () => { onConfirm(); closeModal(genericModal); };
             document.getElementById('confirm-cancel-btn').onclick = () => closeModal(genericModal);
+        };
+
+        // --- ADMIN & REPORTING FUNCTIONS ---
+        const showReportModal = (contentId, contentType, context = {}) => {
+            const modalTitle = document.getElementById('generic-modal-title');
+            const modalContent = document.getElementById('generic-modal-content');
+            const modalFooter = document.getElementById('generic-modal-footer');
+            modalTitle.textContent = 'Inhalt melden';
+            document.getElementById('generic-modal-header-actions').innerHTML = '';
+            modalContent.innerHTML = `
+                <div class="space-y-4">
+                    <div>
+                        <label for="report-reason" class="block text-sm font-medium text-gray-300 mb-1">Grund für die Meldung</label>
+                        <select id="report-reason" class="w-full p-3 bg-slate-800 border border-slate-700 rounded-lg">
+                            <option>Spam oder irreführend</option>
+                            <option>Hassrede oder Belästigung</option>
+                            <option>Gewalttätige oder abstoßende Inhalte</option>
+                            <option>Nacktheit oder sexuelle Inhalte</option>
+                            <option>Sonstiges</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label for="report-details" class="block text-sm font-medium text-gray-300 mb-1">Zusätzliche Details (optional)</label>
+                        <textarea id="report-details" rows="4" class="w-full p-3 bg-slate-800 border border-slate-700 rounded-lg" placeholder="Bitte gib mehr Informationen an..."></textarea>
+                    </div>
+                </div>
+            `;
+            modalFooter.innerHTML = `<button id="submit-report-btn" class="btn-primary bg-red-600 hover:bg-red-500 w-full">Meldung abschicken</button>`;
+            openModal(genericModal);
+
+            document.getElementById('submit-report-btn').addEventListener('click', () => {
+                const reason = document.getElementById('report-reason').value;
+                const details = document.getElementById('report-details').value;
+                handleReportSubmit(contentId, contentType, reason, details, context);
+            });
+        };
+
+        const handleReportSubmit = async (contentId, contentType, reason, details, context) => {
+            if (!currentUser) {
+                showToast("Du musst angemeldet sein, um Inhalte zu melden.", "error");
+                return;
+            }
+            showLoader("Meldung wird gesendet...");
+            try {
+                await addDoc(collection(db, 'reports'), {
+                    reporterId: currentUser.uid,
+                    reporterName: currentUserProfile.displayName,
+                    contentId,
+                    contentType,
+                    reason,
+                    details,
+                    context, // z.B. { chatId, chatType, senderId } für Nachrichten
+                    status: 'open',
+                    timestamp: serverTimestamp()
+                });
+                showToast("Meldung erfolgreich übermittelt. Vielen Dank!", "success");
+                closeModal(genericModal);
+            } catch (error) {
+                console.error("Error submitting report:", error);
+                showToast("Fehler beim Senden der Meldung.", "error");
+            } finally {
+                hideLoader();
+            }
+        };
+        
+        const renderAdminUsers = async () => {
+            const adminContentArea = document.getElementById('admin-content-area');
+            if (!adminContentArea) return;
+            adminContentArea.innerHTML = '<div class="loader"></div>';
+
+            try {
+                const usersRef = collection(db, "users");
+                const querySnapshot = await getDocs(usersRef);
+                let userCardsHtml = '';
+                querySnapshot.forEach(doc => {
+                    const user = {id: doc.id, ...doc.data()};
+                    if (user.id === currentUser.uid) return;
+                    
+                    const crownIcon = user.role === 'founder' || user.role === 'admin' ? `<i data-lucide="crown" class="w-5 h-5 text-yellow-400"></i>` : '';
+                    let adminDateHtml = '';
+                    if (user.role === 'admin' && user.promotedToAdminAt) {
+                        const date = user.promotedToAdminAt.toDate().toLocaleDateString('de-DE');
+                        adminDateHtml = `<p class="text-xs text-gray-400 mt-1">Admin seit: ${date}</p>`;
+                    }
+                    
+                    let adminButtonHtml = '';
+                    if (user.role === 'founder') {
+                        adminButtonHtml = `<button class="btn-secondary text-sm flex-grow opacity-50 cursor-not-allowed" disabled>Gründer</button>`;
+                    } else {
+                        adminButtonHtml = `<button data-id="${user.id}" data-role="${user.role}" class="toggle-admin-btn btn-secondary text-sm flex-grow ${currentUserProfile.role !== 'founder' ? 'opacity-50 cursor-not-allowed' : ''}" ${currentUserProfile.role !== 'founder' ? 'disabled' : ''}>${user.role === 'admin' ? 'Admin entfernen' : 'Admin geben'}</button>`;
+                    }
+
+                    let banButtonHtml = '';
+                    if (user.role === 'founder') {
+                        banButtonHtml = `<button class="bg-slate-800 text-gray-500 font-bold py-2 px-4 rounded-lg text-sm flex-grow cursor-not-allowed" disabled>Unantastbar</button>`;
+                    } else {
+                        banButtonHtml = `<button data-id="${user.id}" data-banned="${user.banned}" class="toggle-ban-btn ${user.banned ? 'bg-green-600 hover:bg-green-500' : 'bg-red-600 hover:bg-red-500'} text-white font-bold py-2 px-4 rounded-lg text-sm flex-grow">${user.banned ? 'Entsperren' : 'Sperren'}</button>`;
+                    }
+
+                    userCardsHtml += `
+                        <div class="glass-card p-4 rounded-lg mb-4">
+                            <div class="flex justify-between items-start">
+                                <div class="flex items-center gap-3">
+                                    <img src="${user.photoURL || `https://placehold.co/48x48/1E293B/FFFFFF?text=${user.displayName.charAt(0)}`}" class="w-12 h-12 rounded-full object-cover">
+                                    <div>
+                                        <p class="font-bold text-lg flex items-center gap-2">${user.displayName} ${crownIcon}</p>
+                                        <p class="text-sm text-gray-400">${user.email}</p>
+                                        ${adminDateHtml}
+                                    </div>
+                                </div>
+                                <div class="text-right">
+                                    <p class="text-sm text-gray-400">Bans: ${user.banCount || 0}</p>
+                                </div>
+                            </div>
+                            <div class="mt-4 pt-4 border-t border-slate-700 flex gap-2">
+                                ${adminButtonHtml}
+                                ${banButtonHtml}
+                            </div>
+                        </div>
+                    `;
+                });
+                adminContentArea.innerHTML = `<div class="space-y-4">${userCardsHtml}</div>`;
+                lucide.createIcons();
+                adminContentArea.querySelectorAll('.toggle-admin-btn').forEach(btn => { btn.addEventListener('click', () => toggleAdminRole(btn.dataset.id, btn.dataset.role)); });
+                adminContentArea.querySelectorAll('.toggle-ban-btn').forEach(btn => { btn.addEventListener('click', () => toggleBanStatus(btn.dataset.id, btn.dataset.banned === 'true')); });
+            } catch (error) {
+                console.error("Error fetching users for admin panel:", error);
+                adminContentArea.innerHTML = `<div class="text-center p-4"><p class="text-red-400">Fehler beim Laden der Benutzerliste.</p><p class="text-gray-400 mt-2 text-sm">Dies liegt wahrscheinlich an den Firestore-Sicherheitsregeln. Administratoren benötigen eine "list"-Berechtigung für die "users"-Sammlung, um alle Benutzer anzuzeigen.</p></div>`;
+            }
+        };
+
+        const renderAdminReports = async () => {
+            const adminContentArea = document.getElementById('admin-content-area');
+            if (!adminContentArea) return;
+            adminContentArea.innerHTML = '<div class="loader"></div>';
+
+            try {
+                const reportsQuery = query(collection(db, "reports"), where('status', '==', 'open'), orderBy('timestamp', 'desc'));
+                const snapshot = await getDocs(reportsQuery);
+                
+                if (snapshot.empty) {
+                    adminContentArea.innerHTML = `<p class="text-center text-gray-400">Keine offenen Meldungen.</p>`;
+                    return;
+                }
+
+                let reportsHtml = '';
+                for (const reportDoc of snapshot.docs) {
+                    const report = { id: reportDoc.id, ...reportDoc.data() };
+                    reportsHtml += `
+                        <div class="glass-card p-4 rounded-lg mb-4">
+                            <div class="flex justify-between items-start">
+                                <div>
+                                    <p class="font-bold text-yellow-400">${report.reason}</p>
+                                    <p class="text-sm text-gray-300">Gemeldeter Inhalt: ${report.contentType} (${report.contentId.substring(0, 8)}...)</p>
+                                    <p class="text-sm text-gray-400">Gemeldet von: ${report.reporterName}</p>
+                                    <p class="text-sm text-gray-500 mt-2">${report.details || 'Keine weiteren Details.'}</p>
+                                </div>
+                                <span class="text-xs text-gray-500">${report.timestamp.toDate().toLocaleString('de-DE')}</span>
+                            </div>
+                            <div class="mt-4 pt-4 border-t border-slate-700 flex gap-2">
+                                <button data-report-id="${report.id}" class="resolve-report-btn btn-secondary bg-green-600 hover:bg-green-500 text-sm">Als erledigt markieren</button>
+                                <!-- Weitere Aktionen könnten hier hinzugefügt werden -->
+                            </div>
+                        </div>
+                    `;
+                }
+                adminContentArea.innerHTML = `<div class="space-y-4">${reportsHtml}</div>`;
+                adminContentArea.querySelectorAll('.resolve-report-btn').forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        showConfirmationModal('Möchtest du diese Meldung wirklich als erledigt markieren?', async () => {
+                            await updateDoc(doc(db, 'reports', btn.dataset.reportId), { status: 'resolved' });
+                            showToast('Meldung als erledigt markiert.', 'success');
+                            renderAdminReports();
+                        });
+                    });
+                });
+
+            } catch (error) {
+                console.error("Error fetching reports:", error);
+                adminContentArea.innerHTML = `<div class="text-center p-4"><p class="text-red-400">Fehler beim Laden der Meldungen.</p><p class="text-gray-400 mt-2 text-sm">Dies liegt wahrscheinlich an den Firestore-Sicherheitsregeln. Administratoren benötigen eine "list"-Berechtigung für die "reports"-Sammlung, um alle Meldungen anzuzeigen.</p></div>`;
+            }
+        };
+        
+        const showAdminPanel = async () => {
+            document.getElementById('user-dropdown-logged-in')?.classList.add('hidden');
+
+            const modalTitle = document.getElementById('generic-modal-title');
+            const modalContent = document.getElementById('generic-modal-content');
+            const modalFooter = document.getElementById('generic-modal-footer');
+            modalTitle.textContent = 'Admin Panel';
+            document.getElementById('generic-modal-header-actions').innerHTML = `
+                <div class="border-b border-slate-700">
+                    <nav class="flex space-x-1">
+                        <button data-tab="users" class="admin-tab-btn py-2 px-3 text-white border-b-2 border-blue-500 font-semibold text-sm">Benutzer</button>
+                        <button data-tab="reports" class="admin-tab-btn py-2 px-3 text-gray-400 border-b-2 border-transparent hover:border-gray-500 text-sm">Meldungen</button>
+                    </nav>
+                </div>
+            `;
+            modalContent.innerHTML = '<div id="admin-content-area" class="mt-4"><div class="loader"></div></div>';
+            modalFooter.innerHTML = '';
+            openModal(genericModal);
+            
+            document.querySelectorAll('.admin-tab-btn').forEach(btn => {
+                btn.onclick = (e) => {
+                    document.querySelectorAll('.admin-tab-btn').forEach(b => { b.classList.remove('text-white', 'border-blue-500'); b.classList.add('text-gray-400', 'border-transparent'); });
+                    e.currentTarget.classList.add('text-white', 'border-blue-500');
+                    e.currentTarget.classList.remove('text-gray-400', 'border-transparent');
+                    if (e.currentTarget.dataset.tab === 'users') {
+                        renderAdminUsers();
+                    } else if (e.currentTarget.dataset.tab === 'reports') {
+                        renderAdminReports();
+                    }
+                };
+            });
+
+            renderAdminUsers(); // Standardmäßig Benutzer anzeigen
+        };
+
+        const toggleAdminRole = async (userId, currentRole) => {
+            if (currentUserProfile.role !== 'founder') { showToast('Nur der Gründer kann Rollen ändern.', 'error'); return; }
+            const newRole = currentRole === 'admin' ? 'user' : 'admin';
+            const updateData = { role: newRole };
+            if (newRole === 'admin') {
+                updateData.promotedToAdminAt = serverTimestamp();
+            } else {
+                updateData.promotedToAdminAt = deleteField();
+            }
+            
+            showLoader('Rolle wird aktualisiert...');
+            try {
+                const userRef = doc(db, `users/${userId}`);
+                await updateDoc(userRef, updateData);
+                showToast('Benutzerrolle aktualisiert.', 'success');
+                renderAdminUsers();
+            } catch (error) {
+                showToast(`Fehler: ${error.message}`, 'error');
+            } finally {
+                hideLoader();
+            }
+        };
+
+        const toggleBanStatus = async (userId, isCurrentlyBanned) => {
+            const userToModifyRef = doc(db, "users", userId);
+            const userToModifySnap = await getDoc(userToModifyRef);
+            if (userToModifySnap.exists() && userToModifySnap.data().role === 'founder') {
+                showToast("Der Gründer kann nicht gesperrt werden.", "error");
+                return;
+            }
+
+            if (isCurrentlyBanned) {
+                showLoader('Benutzer wird entsperrt...');
+                try {
+                    await updateDoc(userToModifyRef, { banned: false, bannedBy: null });
+                    showToast('Benutzer wurde entsperrt.', 'success');
+                    renderAdminUsers();
+                } catch (error) { showToast(`Fehler: ${error.message}`, 'error'); } finally { hideLoader(); }
+            } else {
+                showLoader('Benutzer wird gesperrt...');
+                try {
+                    await updateDoc(userToModifyRef, { 
+                        banned: true,
+                        bannedBy: currentUser.uid,
+                        banCount: increment(1)
+                    });
+                    showToast('Benutzer wurde gesperrt.', 'success');
+                    renderAdminUsers();
+                } catch (error) { showToast(`Fehler: ${error.message}`, 'error'); } finally { hideLoader(); }
+            }
         };
 
         // --- AUTHENTICATION LOGIC ---
@@ -700,13 +972,20 @@
             modalHeaderActions.innerHTML = '';
             modalContent.innerHTML = `
                 <video controls autoplay class="w-full rounded-lg bg-black max-h-[60vh]"><source src="${video.videoUrl}" type="video/mp4"></video>
-                <div class="mt-4 flex justify-between items-center"><p class="text-gray-400">Hochgeladen von ${video.uploaderName}</p><button id="like-video-btn" class="flex items-center gap-2 btn-secondary"><i data-lucide="heart"></i><span id="like-count">${video.likes?.length || 0}</span></button></div>
+                <div class="mt-4 flex justify-between items-center">
+                    <p class="text-gray-400">Hochgeladen von ${video.uploaderName}</p>
+                    <div class="flex items-center gap-4">
+                        <button id="like-video-btn" class="flex items-center gap-2 btn-secondary"><i data-lucide="heart"></i><span id="like-count">${video.likes?.length || 0}</span></button>
+                        <button id="report-video-btn" class="flex items-center gap-2 btn-secondary bg-yellow-600/50 hover:bg-yellow-500/50 text-yellow-300"><i data-lucide="flag"></i><span>Melden</span></button>
+                    </div>
+                </div>
                 <div class="mt-4 border-t border-slate-700 pt-4"><h4 class="font-semibold mb-2 text-lg">Kommentare</h4><div id="video-comments" class="space-y-3 max-h-40 overflow-y-auto"></div></div>`;
             modalFooter.innerHTML = `<form id="add-comment-form" class="flex gap-2"><input id="comment-input" class="flex-grow p-2 bg-slate-800 border border-slate-700 rounded-lg" placeholder="Kommentar hinzufügen..." autocomplete="off"><button type="submit" class="btn-primary">Senden</button></form>`;
             openModal(genericModal);
             updateLikeButton(videoId);
             renderComments(videoId);
             document.getElementById('like-video-btn').addEventListener('click', () => toggleLike(videoId));
+            document.getElementById('report-video-btn').addEventListener('click', () => showReportModal(videoId, 'video'));
             document.getElementById('add-comment-form').addEventListener('submit', (e) => { e.preventDefault(); const input = document.getElementById('comment-input'); addComment(videoId, input.value); input.value = ''; });
             lucide.createIcons();
         };
@@ -721,13 +1000,11 @@
                 }
                 const videoData = videoSnap.data();
 
-                // Delete files from Storage
                 const videoFileRef = ref(storage, videoData.videoUrl);
                 const thumbFileRef = ref(storage, videoData.thumbnailUrl);
                 await deleteObject(videoFileRef);
                 await deleteObject(thumbFileRef);
 
-                // Delete comments subcollection
                 const commentsQuery = query(collection(db, `videos/${videoId}/comments`));
                 const commentsSnapshot = await getDocs(commentsQuery);
                 const batch = writeBatch(db);
@@ -736,11 +1013,10 @@
                 });
                 await batch.commit();
 
-                // Delete the main video document
                 await deleteDoc(videoRef);
 
                 showToast("Video erfolgreich gelöscht.", "success");
-                closeModal(genericModal); // Close if video player was open
+                closeModal(genericModal);
             } catch (error) {
                 console.error("Error deleting video:", error);
                 showToast("Fehler beim Löschen des Videos.", "error");
@@ -1161,11 +1437,9 @@
             openChat(groupData.id, groupData.name, 'group', groupData);
         };
 
-        // **MODIFIZIERT: `openChat` schließt jetzt das vorherige Modal**
         const openChat = async (chatId, chatName, type, groupData = null) => {
-            closeModal(chatsFriendsModal); // Schließt das "Chats & Freunde"-Fenster
+            closeModal(chatsFriendsModal);
 
-            // Warte kurz, damit die Schließanimation abgeschlossen ist, bevor das neue Fenster öffnet
             setTimeout(async () => {
                 if (currentUser) {
                     const userRef = doc(db, 'users', currentUser.uid);
@@ -1324,7 +1598,7 @@
                                 const targetElement = e.currentTarget;
                                 clearTimeout(longPressTimer);
                                 longPressTimer = setTimeout(() => {
-                                    showMessageContextMenu(targetElement, chatId, msg.id, type);
+                                    showMessageContextMenu(targetElement, chatId, msg.id, type, msg.senderId);
                                 }, 500);
                             };
                             const handlePressEnd = () => clearTimeout(longPressTimer);
@@ -1407,13 +1681,14 @@
                         }
                     }
                 });
-            }, 300); // Wartezeit für die Animation
+            }, 300);
         };
         
         // --- Chat Management Functions ---
-        const showMessageContextMenu = (targetElement, chatId, messageId, type) => {
+        const showMessageContextMenu = (targetElement, chatId, messageId, type, senderId) => {
             const menu = document.getElementById('message-context-menu');
             const deleteBtn = document.getElementById('delete-context-btn');
+            const reportBtn = document.getElementById('report-context-btn');
             
             const rect = targetElement.getBoundingClientRect();
             menu.style.top = `${rect.top - menu.offsetHeight - 5}px`;
@@ -1437,6 +1712,16 @@
                     deleteMessage(chatId, messageId, type);
                 });
             };
+            
+            if (senderId === currentUser.uid) {
+                reportBtn.classList.add('hidden');
+            } else {
+                reportBtn.classList.remove('hidden');
+                reportBtn.onclick = () => {
+                    hideMenu();
+                    showReportModal(messageId, 'message', { chatId, chatType: type, senderId });
+                };
+            }
 
             setTimeout(() => document.addEventListener('click', hideMenuOnClickOutside), 0);
         };
@@ -1862,131 +2147,6 @@
             notificationSound.triggerAttackRelease("C5", "8n");
         };
         
-        const showAdminPanel = async () => {
-            document.getElementById('user-dropdown-logged-in')?.classList.add('hidden');
-
-            const modalTitle = document.getElementById('generic-modal-title');
-            const modalContent = document.getElementById('generic-modal-content');
-            const modalFooter = document.getElementById('generic-modal-footer');
-            modalTitle.textContent = 'Admin Panel';
-            document.getElementById('generic-modal-header-actions').innerHTML = '';
-            modalContent.innerHTML = '<div class="loader"></div>';
-            modalFooter.innerHTML = '';
-            openModal(genericModal);
-            
-            try {
-                const usersRef = collection(db, "users");
-                const querySnapshot = await getDocs(usersRef);
-                let userCardsHtml = '';
-                querySnapshot.forEach(doc => {
-                    const user = {id: doc.id, ...doc.data()};
-                    if (user.id === currentUser.uid) return;
-                    
-                    const crownIcon = user.role === 'founder' || user.role === 'admin' ? `<i data-lucide="crown" class="w-5 h-5 text-yellow-400"></i>` : '';
-                    let adminDateHtml = '';
-                    if (user.role === 'admin' && user.promotedToAdminAt) {
-                        const date = user.promotedToAdminAt.toDate().toLocaleDateString('de-DE');
-                        adminDateHtml = `<p class="text-xs text-gray-400 mt-1">Admin seit: ${date}</p>`;
-                    }
-                    
-                    let adminButtonHtml = '';
-                    if (user.role === 'founder') {
-                        adminButtonHtml = `<button class="btn-secondary text-sm flex-grow opacity-50 cursor-not-allowed" disabled>Gründer</button>`;
-                    } else {
-                        adminButtonHtml = `<button data-id="${user.id}" data-role="${user.role}" class="toggle-admin-btn btn-secondary text-sm flex-grow ${currentUserProfile.role !== 'founder' ? 'opacity-50 cursor-not-allowed' : ''}" ${currentUserProfile.role !== 'founder' ? 'disabled' : ''}>${user.role === 'admin' ? 'Admin entfernen' : 'Admin geben'}</button>`;
-                    }
-
-                    let banButtonHtml = '';
-                    if (user.role === 'founder') {
-                        banButtonHtml = `<button class="bg-slate-800 text-gray-500 font-bold py-2 px-4 rounded-lg text-sm flex-grow cursor-not-allowed" disabled>Unantastbar</button>`;
-                    } else {
-                        banButtonHtml = `<button data-id="${user.id}" data-banned="${user.banned}" class="toggle-ban-btn ${user.banned ? 'bg-green-600 hover:bg-green-500' : 'bg-red-600 hover:bg-red-500'} text-white font-bold py-2 px-4 rounded-lg text-sm flex-grow">${user.banned ? 'Entsperren' : 'Sperren'}</button>`;
-                    }
-
-                    userCardsHtml += `
-                        <div class="glass-card p-4 rounded-lg">
-                            <div class="flex justify-between items-start">
-                                <div class="flex items-center gap-3">
-                                    <img src="${user.photoURL || `https://placehold.co/48x48/1E293B/FFFFFF?text=${user.displayName.charAt(0)}`}" class="w-12 h-12 rounded-full object-cover">
-                                    <div>
-                                        <p class="font-bold text-lg flex items-center gap-2">${user.displayName} ${crownIcon}</p>
-                                        <p class="text-sm text-gray-400">${user.email}</p>
-                                        ${adminDateHtml}
-                                    </div>
-                                </div>
-                                <div class="text-right">
-                                    <p class="text-sm text-gray-400">Bans: ${user.banCount || 0}</p>
-                                </div>
-                            </div>
-                            <div class="mt-4 pt-4 border-t border-slate-700 flex gap-2">
-                                ${adminButtonHtml}
-                                ${banButtonHtml}
-                            </div>
-                        </div>
-                    `;
-                });
-                modalContent.innerHTML = `<div class="space-y-4">${userCardsHtml}</div>`;
-                lucide.createIcons();
-                document.querySelectorAll('.toggle-admin-btn').forEach(btn => { btn.addEventListener('click', () => toggleAdminRole(btn.dataset.id, btn.dataset.role)); });
-                document.querySelectorAll('.toggle-ban-btn').forEach(btn => { btn.addEventListener('click', () => toggleBanStatus(btn.dataset.id, btn.dataset.banned === 'true')); });
-            } catch (error) {
-                console.error("Error fetching users for admin panel:", error);
-                modalContent.innerHTML = `<div class="text-center p-4"><p class="text-red-400">Fehler beim Laden der Benutzerliste.</p><p class="text-gray-400 mt-2 text-sm">Dies liegt wahrscheinlich an den Firestore-Sicherheitsregeln. Administratoren benötigen eine "list"-Berechtigung für die "users"-Sammlung, um alle Benutzer anzuzeigen.</p></div>`;
-            }
-        };
-        
-        const toggleAdminRole = async (userId, currentRole) => {
-            if (currentUserProfile.role !== 'founder') { showToast('Nur der Gründer kann Rollen ändern.', 'error'); return; }
-            const newRole = currentRole === 'admin' ? 'user' : 'admin';
-            const updateData = { role: newRole };
-            if (newRole === 'admin') {
-                updateData.promotedToAdminAt = serverTimestamp();
-            } else {
-                updateData.promotedToAdminAt = deleteField();
-            }
-            
-            showLoader('Rolle wird aktualisiert...');
-            try {
-                const userRef = doc(db, `users/${userId}`);
-                await updateDoc(userRef, updateData);
-                showToast('Benutzerrolle aktualisiert.', 'success');
-                showAdminPanel();
-            } catch (error) {
-                showToast(`Fehler: ${error.message}`, 'error');
-            } finally {
-                hideLoader();
-            }
-        };
-
-        const toggleBanStatus = async (userId, isCurrentlyBanned) => {
-            const userToModifyRef = doc(db, "users", userId);
-            const userToModifySnap = await getDoc(userToModifyRef);
-            if (userToModifySnap.exists() && userToModifySnap.data().role === 'founder') {
-                showToast("Der Gründer kann nicht gesperrt werden.", "error");
-                return;
-            }
-
-            if (isCurrentlyBanned) {
-                showLoader('Benutzer wird entsperrt...');
-                try {
-                    await updateDoc(userToModifyRef, { banned: false, bannedBy: null });
-                    showToast('Benutzer wurde entsperrt.', 'success');
-                    showAdminPanel();
-                } catch (error) { showToast(`Fehler: ${error.message}`, 'error'); } finally { hideLoader(); }
-            } else {
-                showLoader('Benutzer wird gesperrt...');
-                try {
-                    await updateDoc(userToModifyRef, { 
-                        banned: true,
-                        bannedBy: currentUser.uid,
-                        banCount: increment(1)
-                    });
-                    showToast('Benutzer wurde gesperrt.', 'success');
-                    showAdminPanel();
-                } catch (error) { showToast(`Fehler: ${error.message}`, 'error'); } finally { hideLoader(); }
-            }
-        };
-
         // --- EMOJI, GIF & AUDIO FUNCTIONS ---
 
         const togglePicker = (type) => {
@@ -2219,7 +2379,6 @@
         document.getElementById('close-auth-modal').addEventListener('click', () => closeModal(authModal));
         document.getElementById('close-chats-friends-modal').addEventListener('click', () => closeModal(chatsFriendsModal));
         
-        // **MODIFIZIERT: Logik für den "Zurück"-Button im Chat**
         document.getElementById('close-generic-modal').addEventListener('click', () => {
             const wasChatOpen = activeChatId !== null;
 

@@ -310,7 +310,11 @@
             const modalTitle = document.getElementById('generic-modal-title');
             const modalContent = document.getElementById('generic-modal-content');
             const modalFooter = document.getElementById('generic-modal-footer');
-            modalTitle.textContent = 'Inhalt melden';
+            if (contentType === 'user') {
+                 modalTitle.textContent = `Nutzer "${context.userName}" melden`;
+            } else {
+                 modalTitle.textContent = 'Inhalt melden';
+            }
             document.getElementById('generic-modal-header-actions').innerHTML = '';
             modalContent.innerHTML = `
                 <div class="space-y-4">
@@ -354,7 +358,7 @@
                     contentType,
                     reason,
                     details,
-                    context, // z.B. { chatId, chatType, senderId } für Nachrichten
+                    context, // z.B. { chatId, chatType, senderId, userName }
                     status: 'open',
                     timestamp: serverTimestamp()
                 });
@@ -440,7 +444,6 @@
             adminContentArea.innerHTML = '<div class="loader"></div>';
 
             try {
-                // FIX: Remove orderBy from the query to avoid needing a composite index.
                 const reportsQuery = query(collection(db, "reports"), where('status', '==', 'open'));
                 const snapshot = await getDocs(reportsQuery);
                 
@@ -449,18 +452,28 @@
                     return;
                 }
 
-                // FIX: Sort the results in JavaScript after fetching.
                 const reports = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                reports.sort((a, b) => b.timestamp.toMillis() - a.timestamp.toMillis());
+                reports.sort((a, b) => {
+                    const timeA = a.timestamp?.toMillis() || 0;
+                    const timeB = b.timestamp?.toMillis() || 0;
+                    return timeB - timeA;
+                });
 
                 let reportsHtml = '';
-                for (const report of reports) { // FIX: Iterate over the sorted array.
+                for (const report of reports) {
+                    let reportedContentInfo = `Gemeldeter Inhalt: ${report.contentType}`;
+                    if(report.contentType === 'user' && report.context?.userName) {
+                        reportedContentInfo = `Gemeldeter Nutzer: <strong>${report.context.userName}</strong>`;
+                    } else {
+                        reportedContentInfo = `Gemeldeter Inhalt: ${report.contentType} (${report.contentId.substring(0, 8)}...)`;
+                    }
+
                     reportsHtml += `
                         <div class="glass-card p-4 rounded-lg mb-4">
                             <div class="flex justify-between items-start">
                                 <div>
                                     <p class="font-bold text-yellow-400">${report.reason}</p>
-                                    <p class="text-sm text-gray-300">Gemeldeter Inhalt: ${report.contentType} (${report.contentId.substring(0, 8)}...)</p>
+                                    <p class="text-sm text-gray-300">${reportedContentInfo}</p>
                                     <p class="text-sm text-gray-400">Gemeldet von: ${report.reporterName}</p>
                                     <p class="text-sm text-gray-500 mt-2">${report.details || 'Keine weiteren Details.'}</p>
                                 </div>
@@ -468,7 +481,6 @@
                             </div>
                             <div class="mt-4 pt-4 border-t border-slate-700 flex gap-2">
                                 <button data-report-id="${report.id}" class="resolve-report-btn btn-secondary bg-green-600 hover:bg-green-500 text-sm">Als erledigt markieren</button>
-                                <!-- Weitere Aktionen könnten hier hinzugefügt werden -->
                             </div>
                         </div>
                     `;
@@ -923,14 +935,25 @@
                     <div id="video-grid" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6"></div>
                 </div>`;
             lucide.createIcons();
-            const videosQuery = query(collection(db, "videos"), orderBy("createdAt", "desc"));
+            
+            const videosQuery = query(collection(db, "videos"));
             onSnapshot(videosQuery, (snapshot) => {
                 const videoGrid = document.getElementById('video-grid');
                 if (!videoGrid) return;
                 videoGrid.innerHTML = '';
-                if (snapshot.empty) { videoGrid.innerHTML = `<p class="col-span-full text-center text-gray-400">Noch keine Videos vorhanden. Lade das erste hoch!</p>`; }
-                snapshot.forEach(doc => {
-                    const video = { id: doc.id, ...doc.data() };
+                if (snapshot.empty) { 
+                    videoGrid.innerHTML = `<p class="col-span-full text-center text-gray-400">Noch keine Videos vorhanden. Lade das erste hoch!</p>`; 
+                    return;
+                }
+                
+                const videos = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                videos.sort((a, b) => {
+                    const timeA = a.createdAt?.toMillis() || 0;
+                    const timeB = b.createdAt?.toMillis() || 0;
+                    return timeB - timeA;
+                });
+
+                videos.forEach(video => {
                     const card = document.createElement('div');
                     card.className = 'glass-card rounded-lg overflow-hidden group';
                     
@@ -1093,6 +1116,10 @@
             modalFooter.innerHTML = `<button id="submit-video-upload" class="btn-primary w-full">Hochladen</button>`;
             openModal(genericModal);
             document.getElementById('submit-video-upload').addEventListener('click', async () => {
+                if (!currentUser) {
+                    showToast("Sie müssen angemeldet sein, um ein Video hochzuladen.", "error");
+                    return;
+                }
                 const title = document.getElementById('video-title-input').value;
                 const thumbnailFile = document.getElementById('thumbnail-upload-input').files[0];
                 const videoFile = document.getElementById('video-upload-input').files[0];
@@ -1112,28 +1139,48 @@
                         const metadata = { contentType: file.type };
                         const uploadTask = uploadBytesResumable(storageRef, file, metadata);
                         const uploadStartTime = Date.now();
-                        document.getElementById('upload-status-text').textContent = statusText;
+                        const statusEl = document.getElementById('upload-status-text');
+                        if (statusEl) statusEl.textContent = statusText;
 
                         uploadTask.on('state_changed', 
                             (snapshot) => {
                                 const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-                                document.getElementById('progress-bar').style.width = progress + '%';
-                                document.getElementById('progress-percentage').textContent = Math.round(progress) + '%';
+                                const progressBar = document.getElementById('progress-bar');
+                                const progressPercentage = document.getElementById('progress-percentage');
+                                const timeRemainingEl = document.getElementById('time-remaining');
+
+                                if(progressBar) progressBar.style.width = progress + '%';
+                                if(progressPercentage) progressPercentage.textContent = Math.round(progress) + '%';
                                 
                                 const elapsedTime = (Date.now() - uploadStartTime) / 1000;
                                 if (elapsedTime > 0.5 && snapshot.bytesTransferred > 0) {
                                     const uploadSpeed = snapshot.bytesTransferred / elapsedTime;
                                     const bytesRemaining = snapshot.totalBytes - snapshot.bytesTransferred;
                                     const secondsRemaining = Math.round(bytesRemaining / uploadSpeed);
-                                    if (isFinite(secondsRemaining) && secondsRemaining > 0) {
-                                        document.getElementById('time-remaining').textContent = `Verbleibende Zeit: ca. ${secondsRemaining} Sekunden`;
-                                    } else {
-                                        document.getElementById('time-remaining').textContent = 'Berechne...';
+                                    if (timeRemainingEl && isFinite(secondsRemaining) && secondsRemaining > 0) {
+                                        timeRemainingEl.textContent = `Verbleibende Zeit: ca. ${secondsRemaining} Sekunden`;
+                                    } else if(timeRemainingEl) {
+                                        timeRemainingEl.textContent = 'Berechne...';
                                     }
                                 }
                             }, 
                             (error) => { 
                                 console.error("Upload failed:", error);
+                                const progressContainer = document.getElementById('upload-progress-container');
+                                if (progressContainer) {
+                                    let errorMessage = "Fehler beim Hochladen.";
+                                    switch (error.code) {
+                                        case 'storage/unauthorized':
+                                            errorMessage = "Berechtigungsfehler. Stelle sicher, dass du angemeldet bist und die Firebase Storage Regeln den Upload erlauben.";
+                                            break;
+                                        case 'storage/canceled':
+                                            errorMessage = "Upload abgebrochen.";
+                                            break;
+                                        default:
+                                            errorMessage = `Ein unbekannter Fehler ist aufgetreten: ${error.code}`;
+                                    }
+                                    progressContainer.innerHTML = `<p class="text-red-400 text-center p-4">${errorMessage}</p>`;
+                                }
                                 reject(error);
                             }, 
                             async () => {
@@ -1145,21 +1192,25 @@
                 };
 
                 try {
-                    await auth.currentUser.getIdToken(true); // Force refresh token
+                    await auth.currentUser.getIdToken(true);
                     const thumbRef = ref(storage, `thumbnails/${Date.now()}_${thumbnailFile.name}`);
                     const thumbnailUrl = await uploadFile(thumbnailFile, thumbRef, 'Lade Vorschaubild hoch...');
                     
                     const videoRef = ref(storage, `videos/${Date.now()}_${videoFile.name}`);
                     const videoUrl = await uploadFile(videoFile, videoRef, 'Lade Video hoch...');
                     
-                    document.getElementById('upload-status-text').textContent = 'Verarbeite Daten...';
+                    const statusEl = document.getElementById('upload-status-text');
+                    if (statusEl) statusEl.textContent = 'Verarbeite Daten...';
                     await addDoc(collection(db, "videos"), { title, thumbnailUrl, videoUrl, uploaderId: currentUser.uid, uploaderName: currentUserProfile.displayName, views: 0, likes: [], createdAt: serverTimestamp() });
                     
                     showToast("Video erfolgreich hochgeladen!", "success");
                     closeModal(genericModal);
                 } catch (error) {
-                    showToast(`Fehler beim Hochladen: ${error.code}`, "error");
-                    closeModal(genericModal);
+                    if (error.code) { 
+                         console.error("Video upload process failed:", error);
+                         showToast(`Fehler: ${error.message || 'Der Prozess konnte nicht abgeschlossen werden.'}`, "error");
+                         closeModal(genericModal);
+                    }
                 }
             });
         };
@@ -1317,7 +1368,7 @@
                         const isFriend = currentUserProfile.friends.includes(user.id);
                         const userCard = document.createElement('div');
                         userCard.className = 'glass-card p-3 flex items-center justify-between';
-                        userCard.innerHTML = `<div class="flex items-center gap-3"><img src="${user.photoURL || `https://placehold.co/40x40/1E293B/FFFFFF?text=${user.displayName.charAt(0)}`}" class="w-10 h-10 rounded-full object-cover"><div><p class="font-semibold text-white">${user.displayName}</p><p class="text-xs text-gray-500">${user.email}</p></div></div><button data-id="${user.id}" class="add-friend-search-btn btn-secondary text-sm" ${isFriend ? 'disabled' : ''}>${isFriend ? 'Freund' : 'Hinzufügen'}</button>`;
+                        userCard.innerHTML = `<div class="flex items-center gap-3"><img src="${user.photoURL || `https://placehold.co/40x40/1E293B/FFFFFF?text=${user.displayName.charAt(0)}`}" class="w-10 h-10 rounded-full object-cover"><div><p class="font-semibold text-white">${user.displayName}</p></div></div><button data-id="${user.id}" class="add-friend-search-btn btn-secondary text-sm" ${isFriend ? 'disabled' : ''}>${isFriend ? 'Freund' : 'Hinzufügen'}</button>`;
                         resultsContainer.appendChild(userCard);
                     });
                     resultsContainer.querySelectorAll('.add-friend-search-btn').forEach(btn => {
@@ -1376,6 +1427,7 @@
                     <div class="flex items-center gap-2">
                         <button data-id="${user.id}" data-name="${user.displayName}" class="call-friend-btn text-green-400 hover:text-green-300"><i data-lucide="phone"></i></button>
                         <button data-id="${user.id}" data-name="${user.displayName}" class="chat-friend-btn text-blue-400 hover:text-blue-300"><i data-lucide="message-circle"></i></button>
+                        <button data-id="${user.id}" data-name="${user.displayName}" class="report-user-btn text-yellow-400 hover:text-yellow-300"><i data-lucide="flag"></i></button>
                         <button data-id="${user.id}" class="remove-friend-btn text-red-500 hover:text-red-400"><i data-lucide="user-minus"></i></button>
                     </div>`;
                     container.appendChild(friendCard);
@@ -1385,6 +1437,7 @@
             container.querySelectorAll('.remove-friend-btn').forEach(btn => { btn.addEventListener('click', () => removeFriend(btn.dataset.id)); });
             container.querySelectorAll('.chat-friend-btn').forEach(btn => { btn.addEventListener('click', () => openDirectChat(btn.dataset.id, btn.dataset.name)); });
             container.querySelectorAll('.call-friend-btn').forEach(btn => { btn.addEventListener('click', () => showCallingModal(btn.dataset.name)); });
+            container.querySelectorAll('.report-user-btn').forEach(btn => { btn.addEventListener('click', () => showReportModal(btn.dataset.id, 'user', { userName: btn.dataset.name })); });
         };
         const removeFriend = async (friendId) => { showConfirmationModal('Bist du sicher, dass du diesen Freund entfernen möchtest?', async () => { try { const batch = writeBatch(db); const currentUserRef = doc(db, `users/${currentUser.uid}`); const friendUserRef = doc(db, `users/${friendId}`); batch.update(currentUserRef, { friends: arrayRemove(friendId) }); batch.update(friendUserRef, { friends: arrayRemove(currentUser.uid) }); await batch.commit(); showToast('Freund entfernt.', 'info'); } catch (error) { showToast(`Fehler: ${error.message}`, 'error'); } }); };
         
@@ -1466,6 +1519,8 @@
                 modalFooter.innerHTML = `
                     <div id="typing-indicator" class="text-sm text-gray-400 h-5 italic mb-1"></div>
                     <form id="chat-form" class="flex gap-2 items-center">
+                        <button type="button" id="attach-image-btn" class="btn-secondary p-2"><i data-lucide="paperclip"></i></button>
+                        <input type="file" id="image-upload-input" class="hidden" accept="image/*">
                         <button type="button" id="gif-btn" class="btn-secondary p-2"><i data-lucide="file-image"></i></button>
                         <button type="button" id="mic-btn" class="btn-secondary p-2"><i data-lucide="mic"></i></button>
                         <div class="relative flex-grow">
@@ -1519,6 +1574,8 @@
                 lucide.createIcons();
                 openModal(genericModal);
                 
+                document.getElementById('attach-image-btn').addEventListener('click', () => document.getElementById('image-upload-input').click());
+                document.getElementById('image-upload-input').addEventListener('change', handleImageUpload);
                 document.getElementById('emoji-btn').addEventListener('click', () => togglePicker('emoji'));
                 document.getElementById('gif-btn').addEventListener('click', () => togglePicker('gif'));
                 document.getElementById('mic-btn').addEventListener('click', handleRecordButtonClick);
@@ -1564,8 +1621,8 @@
                         let messageContentHTML = '';
                         if (msg.isDeleted) {
                             messageContentHTML = `<p class="text-gray-500 italic">Diese Nachricht wurde gelöscht.</p>`;
-                        } else if (msg.type === 'gif') {
-                            messageContentHTML = `<img src="${msg.content}" alt="GIF" class="rounded-lg max-w-full h-auto mt-1">`;
+                        } else if (msg.type === 'gif' || msg.type === 'image') {
+                            messageContentHTML = `<a href="${msg.content}" target="_blank" rel="noopener noreferrer"><img src="${msg.content}" alt="Gesendetes Bild" class="rounded-lg max-w-xs h-auto mt-1 cursor-pointer hover:opacity-80"></a>`;
                         } else if (msg.type === 'audio') {
                             messageContentHTML = `<audio controls src="${msg.content}" class="max-w-full"></audio>`;
                         } else { 
@@ -1583,8 +1640,8 @@
                             : '';
                         
                         const messageBoxClass = isSender 
-                            ? (msg.type === 'gif' ? 'bg-transparent' : 'bg-blue-700')
-                            : (msg.isDeleted ? 'bg-slate-800/50' : (msg.type === 'gif' ? 'bg-transparent' : 'bg-slate-700'));
+                            ? (msg.type === 'gif' || msg.type === 'image' ? 'bg-transparent' : 'bg-blue-700')
+                            : (msg.isDeleted ? 'bg-slate-800/50' : (msg.type === 'gif' || msg.type === 'image' ? 'bg-transparent' : 'bg-slate-700'));
 
                         messageEl.innerHTML = `
                             <div class="flex items-end gap-2 ${isSender ? 'flex-row-reverse' : 'flex-row'}">
@@ -1877,6 +1934,10 @@
                     const card = document.createElement('div');
                     card.className = 'glass-card p-3 flex items-center justify-between';
                     let removeButton = '';
+                    let reportButton = '';
+                    if (memberId !== currentUser.uid) {
+                        reportButton = `<button data-id="${memberId}" data-name="${memberData.displayName}" class="report-user-btn text-yellow-400 hover:text-yellow-300 p-1"><i data-lucide="flag"></i></button>`;
+                    }
                     if (currentUser.uid === ownerId && memberId !== ownerId) {
                         removeButton = `<button data-member-id="${memberId}" data-member-name="${memberData.displayName}" class="remove-member-btn btn-primary bg-red-600 hover:bg-red-500 text-sm">Entfernen</button>`;
                     }
@@ -1885,12 +1946,15 @@
                             <img src="${memberData.photoURL || `https://placehold.co/40x40/1E293B/FFFFFF?text=${memberData.displayName.charAt(0)}`}" class="w-10 h-10 rounded-full object-cover">
                             <p class="font-semibold text-white">${memberData.displayName}</p>
                         </div>
-                        ${removeButton}
+                        <div class="flex items-center gap-2">
+                            ${reportButton}
+                            ${removeButton}
+                        </div>
                     `;
                     list.appendChild(card);
                 }
             }
-
+            lucide.createIcons();
             list.querySelectorAll('.remove-member-btn').forEach(btn => {
                 btn.addEventListener('click', () => {
                     const memberId = btn.dataset.memberId;
@@ -1901,6 +1965,9 @@
                         showGroupMembersModal(groupId, ownerId); // Refresh the list
                     });
                 });
+            });
+            list.querySelectorAll('.report-user-btn').forEach(btn => {
+                btn.addEventListener('click', () => showReportModal(btn.dataset.id, 'user', { userName: btn.dataset.name }));
             });
 
             document.getElementById('close-members-modal').onclick = async () => {
@@ -1947,6 +2014,10 @@
             });
             submitBtn.addEventListener('click', async () => {
                 if (!selectedFile) return;
+                if (!currentUser) {
+                    showToast("Sie müssen angemeldet sein, um ein Bild hochzuladen.", "error");
+                    return;
+                }
                 
                 modalContent.innerHTML = `
                     <div id="upload-progress-container">
@@ -1972,8 +2043,14 @@
                         }, 
                         (error) => {
                             console.error("Upload failed", error);
-                            showToast(`Fehler beim Hochladen: ${error.code}`, 'error');
-                            closeModal(genericModal);
+                            const progressContainer = document.getElementById('upload-progress-container');
+                            if (progressContainer) {
+                                let errorMessage = "Fehler beim Hochladen.";
+                                if (error.code === 'storage/unauthorized') {
+                                    errorMessage = "Berechtigungsfehler. Bitte erneut anmelden und sicherstellen, dass die Storage-Regeln korrekt sind.";
+                                }
+                                progressContainer.innerHTML = `<p class="text-red-400 text-center p-4">${errorMessage}</p>`;
+                            }
                         }, 
                         async () => {
                             try {
@@ -1990,8 +2067,8 @@
                         }
                     );
                 } catch(error) {
-                    console.error("Token refresh failed:", error);
-                    showToast('Authentifizierung fehlgeschlagen. Bitte erneut anmelden.', 'error');
+                    console.error("Token refresh or upload failed:", error);
+                    showToast('Authentifizierung fehlgeschlagen oder Upload-Fehler.', 'error');
                     closeModal(genericModal);
                 }
             });
@@ -2371,6 +2448,73 @@
             }
         };
 
+        const handleImageUpload = async (event) => {
+            const file = event.target.files[0];
+            if (!file || !activeChatId) return;
+
+            showLoader("Lade Bild hoch...");
+            try {
+                await auth.currentUser.getIdToken(true);
+                const storageRef = ref(storage, `chatImages/${activeChatId}/${Date.now()}_${file.name}`);
+                const uploadTask = uploadBytesResumable(storageRef, file, { contentType: file.type });
+
+                uploadTask.on('state_changed',
+                    (snapshot) => {
+                        const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+                        showLoader(`Lade Bild hoch... ${Math.round(progress)}%`);
+                    },
+                    (error) => {
+                        console.error("Image upload failed:", error);
+                        showToast("Bild-Upload fehlgeschlagen.", "error");
+                        hideLoader();
+                    },
+                    async () => {
+                        const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
+                        await sendImageMessage(downloadURL, activeChatId);
+                        hideLoader();
+                        showToast("Bild gesendet!", "success");
+                    }
+                );
+            } catch (error) {
+                console.error("Error during image upload process:", error);
+                showToast("Fehler beim Bild-Upload.", "error");
+                hideLoader();
+            }
+        };
+
+        const sendImageMessage = async (imageUrl, chatId) => {
+            if (!chatId || !activeChatType) return;
+            const collectionPath = activeChatType === 'group' ? `groups/${chatId}/messages` : `directMessages/${chatId}/messages`;
+            try {
+                await addDoc(collection(db, collectionPath), {
+                    type: 'image',
+                    content: imageUrl,
+                    text: '[Bild]',
+                    senderId: currentUser.uid,
+                    senderName: currentUserProfile.displayName,
+                    timestamp: serverTimestamp(),
+                    readBy: [currentUser.uid]
+                });
+
+                const chatDocRef = doc(db, activeChatType === 'group' ? 'groups' : 'directMessages', chatId);
+                const chatDocSnap = await getDoc(chatDocRef);
+                if (chatDocSnap.exists()) {
+                    const members = chatDocSnap.data().members;
+                    const batch = writeBatch(db);
+                    members.forEach(memberId => {
+                        if (memberId !== currentUser.uid) {
+                            const userRef = doc(db, 'users', memberId);
+                            batch.update(userRef, { unreadChats: arrayUnion(chatId) });
+                        }
+                    });
+                    await batch.commit();
+                }
+            } catch (error) {
+                console.error("Error sending image message:", error);
+                showToast("Bild konnte nicht gesendet werden.", "error");
+            }
+        };
+
 
         // --- INITIALIZATION ---
         window.onload = () => {
@@ -2419,4 +2563,3 @@
     </script>
 </body>
 </html>
-c

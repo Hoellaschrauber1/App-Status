@@ -119,8 +119,8 @@
     </div>
 
     <!-- Chats & Friends Modal -->
-    <div id="chats-friends-modal" class="hidden fixed inset-0 flex items-center justify-center z-50 p-0 md:p-4 modal-enter">
-        <div class="glass-card w-screen h-screen rounded-none p-4 md:w-full md:max-w-2xl md:h-[70vh] md:rounded-xl md:p-6 flex flex-col shadow-2xl">
+    <div id="chats-friends-modal" class="hidden fixed inset-0 flex items-center justify-center z-50 p-4 modal-enter">
+        <div class="glass-card w-full max-w-2xl h-[70vh] flex flex-col p-6 shadow-2xl">
             <div class="flex justify-between items-center mb-4">
                 <h2 class="text-2xl font-bold text-white">Chats & Freunde</h2>
                 <button id="close-chats-friends-modal" class="text-gray-400 hover:text-white"><i data-lucide="x"></i></button>
@@ -136,10 +136,13 @@
     </div>
     
     <!-- Other Modals (Notes, Settings, Profile Pic, Admin, Video Player) will use this generic structure -->
-    <div id="generic-modal" class="hidden fixed inset-0 flex items-center justify-center z-50 p-0 md:p-4 modal-enter">
-        <div class="glass-card w-screen h-screen rounded-none p-4 md:w-full md:max-w-4xl md:h-auto md:max-h-[90vh] md:rounded-xl md:p-6 flex flex-col shadow-2xl">
+    <div id="generic-modal" class="hidden fixed inset-0 flex items-center justify-center z-50 p-4 modal-enter">
+        <div class="glass-card w-full max-w-4xl h-auto max-h-[90vh] flex flex-col p-6 shadow-2xl">
             <div class="flex justify-between items-center mb-4 pb-4 border-b border-slate-700">
-                <h2 id="generic-modal-title" class="text-2xl font-bold text-white flex-grow"></h2>
+                <div class="flex-grow">
+                    <h2 id="generic-modal-title" class="text-2xl font-bold text-white"></h2>
+                    <p id="generic-modal-subtitle" class="text-sm text-gray-400"></p>
+                </div>
                 <div id="generic-modal-header-actions" class="flex items-center gap-2"></div>
                 <button id="close-generic-modal" class="text-gray-400 hover:text-white ml-4"><i data-lucide="x"></i></button>
             </div>
@@ -180,6 +183,11 @@
     <!-- Mention Popover -->
     <div id="mention-popover" class="hidden absolute z-[60] glass-card p-1 rounded-lg w-64 max-h-48 overflow-y-auto">
         <!-- Mention suggestions will be injected here -->
+    </div>
+    
+    <!-- Reaction Picker Popover -->
+    <div id="reaction-picker-popover" class="hidden absolute z-[60] glass-card p-2 rounded-full flex gap-1 shadow-lg">
+        <!-- Reactions will be injected here by JS -->
     </div>
 
 
@@ -238,6 +246,7 @@
         let currentUser = null;
         let currentUserProfile = null;
         let unsubscribeUserListener = null;
+        let unsubscribeFriendStatusListener = null;
         let friendsStatusUnsubscribers = {};
         let isRegistering = false;
         let typingTimeout = null;
@@ -246,6 +255,7 @@
         let longPressTimer = null;
         let activeChatId = null;
         let activeChatType = null;
+        let activeChatGroupData = null; // Store current group data for mentions
         let notificationSound;
         let previousUnreadCount = 0;
         let activePicker = null; // 'emoji' or 'gif'
@@ -253,6 +263,7 @@
         let isRecording = false;
         let audioChunks = [];
         let inactivityTimer = null;
+        const PREDEFINED_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
 
         // --- HELPER & MODAL FUNCTIONS ---
         const showLoader = (text = 'Lade...') => {
@@ -298,10 +309,12 @@
         };
         const showConfirmationModal = (message, onConfirm) => {
             const modalTitle = document.getElementById('generic-modal-title');
+            const modalSubtitle = document.getElementById('generic-modal-subtitle');
             const modalContent = document.getElementById('generic-modal-content');
             const modalFooter = document.getElementById('generic-modal-footer');
             const modalHeaderActions = document.getElementById('generic-modal-header-actions');
             modalTitle.textContent = 'Bestätigung';
+            modalSubtitle.textContent = '';
             modalHeaderActions.innerHTML = '';
             modalContent.innerHTML = `<p class="text-gray-300">${message}</p>`;
             modalFooter.innerHTML = `
@@ -318,9 +331,23 @@
         const linkify = (inputText) => {
             if (!inputText) return '';
             
-            // Regex to find @mentions, but not in HTML tags
+            // Regex to find @mentions, highlights them, and makes them non-clickable for now.
+            // A proper implementation would link to user profiles.
             const mentionPattern = /@(\w+)/g;
-            let linkedText = inputText.replace(mentionPattern, '<span class="text-blue-400 font-bold">@$1</span>');
+            let linkedText = inputText.replace(mentionPattern, (match, username) => {
+                 // Check if the mentioned user is part of the current group chat
+                if (activeChatType === 'group' && activeChatGroupData && activeChatGroupData.memberDetails) {
+                    const mentionedUser = Object.values(activeChatGroupData.memberDetails).find(m => m.displayName === username);
+                    if (mentionedUser) {
+                        // Highlight mentions of the current user differently
+                        if (mentionedUser.id === currentUser.uid) {
+                             return `<span class="bg-yellow-500/30 text-yellow-200 font-bold p-1 rounded-md">@${username}</span>`;
+                        }
+                        return `<span class="text-blue-400 font-bold">@${username}</span>`;
+                    }
+                }
+                return match; // Return original match if user not found or not in a group chat
+            });
 
             // URLs starting with http://, https://, or ftp://
             const urlPattern = /(\b(https?|ftp|file):\/\/[-A-Z0-9+&@#\/%?=~_|!:,.;]*[-A-Z0-9+&@#\/%=~_|])/ig;
@@ -579,6 +606,7 @@
             const modalContent = document.getElementById('generic-modal-content');
             const modalFooter = document.getElementById('generic-modal-footer');
             modalTitle.textContent = 'Admin Panel';
+            document.getElementById('generic-modal-subtitle').textContent = '';
             document.getElementById('generic-modal-header-actions').innerHTML = `
                 <div class="border-b border-slate-700">
                     <nav class="flex space-x-1">
@@ -718,7 +746,7 @@
                 }
 
                 onDisconnect(userStatusDatabaseRef).set(isOfflineForDatabase).then(() => {
-                    updateDoc(userStatusFirestoreRef, isOfflineForFirestore);
+                    onDisconnect(userStatusFirestoreRef).update(isOfflineForFirestore);
                 });
 
                 set(userStatusDatabaseRef, isOnlineForDatabase);
@@ -1152,6 +1180,7 @@
             const modalFooter = document.getElementById('generic-modal-footer');
             const modalHeaderActions = document.getElementById('generic-modal-header-actions');
             modalTitle.textContent = video.title;
+            document.getElementById('generic-modal-subtitle').textContent = '';
             modalHeaderActions.innerHTML = '';
             modalContent.innerHTML = `
                 <video controls autoplay class="w-full rounded-lg bg-black max-h-[60vh]"><source src="${video.videoUrl}" type="video/mp4"></video>
@@ -1262,6 +1291,7 @@
             const modalContent = document.getElementById('generic-modal-content');
             const modalFooter = document.getElementById('generic-modal-footer');
             modalTitle.textContent = 'Video hochladen';
+            document.getElementById('generic-modal-subtitle').textContent = '';
             document.getElementById('generic-modal-header-actions').innerHTML = '';
             modalContent.innerHTML = `
                 <div class="space-y-4">
@@ -1514,6 +1544,7 @@
             const modalContent = document.getElementById('generic-modal-content');
             const modalFooter = document.getElementById('generic-modal-footer');
             modalTitle.textContent = 'Freund hinzufügen';
+            document.getElementById('generic-modal-subtitle').textContent = '';
             document.getElementById('generic-modal-header-actions').innerHTML = '';
             modalContent.innerHTML = `<p class="text-gray-400 mb-4">Suche nach dem Anzeigenamen (optional).</p><input type="text" id="search-user-input" placeholder="Nutzer suchen..." class="w-full p-3 bg-slate-800 border border-slate-700 rounded-lg"><div id="search-results" class="mt-4 space-y-2 max-h-96 overflow-y-auto"></div>`;
             modalFooter.innerHTML = '';
@@ -1638,18 +1669,18 @@
                         }
 
                         friendCard.innerHTML = `<div class="flex items-center gap-3">
-                            <div class="relative">
-                                <img src="${user.photoURL || `https://placehold.co/40x40/1E293B/FFFFFF?text=${user.displayName.charAt(0)}`}" class="w-10 h-10 rounded-full object-cover">
-                                <div class="absolute -bottom-1 -right-1" id="status-icon-${user.id}">${statusHtml}</div>
+                                <div class="relative">
+                                    <img src="${user.photoURL || `https://placehold.co/40x40/1E293B/FFFFFF?text=${user.displayName.charAt(0)}`}" class="w-10 h-10 rounded-full object-cover">
+                                    <div class="absolute -bottom-1 -right-1" id="status-icon-${user.id}">${statusHtml}</div>
+                                </div>
+                                <p class="font-semibold text-white">${user.displayName}</p>
                             </div>
-                            <p class="font-semibold text-white">${user.displayName}</p>
-                        </div>
-                        <div class="flex items-center gap-2">
-                            <button data-id="${user.id}" data-name="${user.displayName}" class="call-friend-btn text-green-400 hover:text-green-300"><i data-lucide="phone"></i></button>
-                            <button data-id="${user.id}" data-name="${user.displayName}" class="chat-friend-btn text-blue-400 hover:text-blue-300"><i data-lucide="message-circle"></i></button>
-                            <button data-id="${user.id}" data-name="${user.displayName}" class="report-user-btn text-yellow-400 hover:text-yellow-300"><i data-lucide="flag"></i></button>
-                            <button data-id="${user.id}" class="remove-friend-btn text-red-500 hover:text-red-400"><i data-lucide="user-minus"></i></button>
-                        </div>`;
+                            <div class="flex items-center gap-2">
+                                <button data-id="${user.id}" data-name="${user.displayName}" class="call-friend-btn text-green-400 hover:text-green-300"><i data-lucide="phone"></i></button>
+                                <button data-id="${user.id}" data-name="${user.displayName}" class="chat-friend-btn text-blue-400 hover:text-blue-300"><i data-lucide="message-circle"></i></button>
+                                <button data-id="${user.id}" data-name="${user.displayName}" class="report-user-btn text-yellow-400 hover:text-yellow-300"><i data-lucide="flag"></i></button>
+                                <button data-id="${user.id}" class="remove-friend-btn text-red-500 hover:text-red-400"><i data-lucide="user-minus"></i></button>
+                            </div>`;
                         
                         lucide.createIcons();
                         friendCard.querySelector('.remove-friend-btn').addEventListener('click', () => removeFriend(user.id));
@@ -1667,6 +1698,7 @@
             const modalContent = document.getElementById('generic-modal-content');
             const modalFooter = document.getElementById('generic-modal-footer');
             modalTitle.textContent = 'Neue Gruppe erstellen';
+            document.getElementById('generic-modal-subtitle').textContent = '';
             document.getElementById('generic-modal-header-actions').innerHTML = '';
             modalContent.innerHTML = `<form id="create-group-form"><input type="text" id="group-name" placeholder="Gruppenname" class="w-full p-3 bg-slate-800 border border-slate-700 rounded-lg mb-4" required><textarea id="group-desc" placeholder="Beschreibung" class="w-full p-3 bg-slate-800 border border-slate-700 rounded-lg mb-4" required></textarea></form>`;
             modalFooter.innerHTML = `<button id="submit-create-group" class="btn-primary w-full">Erstellen</button>`;
@@ -1701,7 +1733,7 @@
 
         const openDirectChat = (friendId, friendName) => {
             const chatRoomId = getChatRoomId(currentUser.uid, friendId);
-            openChat(chatRoomId, friendName, 'direct');
+            openChat(chatRoomId, friendName, 'direct', { friendId: friendId });
         };
 
         const openGroupChat = async (groupId) => {
@@ -1715,7 +1747,7 @@
             openChat(groupData.id, groupData.name, 'group', groupData);
         };
 
-        const openChat = async (chatId, chatName, type, groupData = null) => {
+        const openChat = async (chatId, chatName, type, contextData = null) => {
             closeModal(chatsFriendsModal);
 
             setTimeout(async () => {
@@ -1726,15 +1758,20 @@
 
                 activeChatId = chatId;
                 activeChatType = type;
+                activeChatGroupData = type === 'group' ? contextData : null;
+
                 if (unsubscribeChatListener) unsubscribeChatListener();
                 if (unsubscribeTypingListener) unsubscribeTypingListener();
+                if (unsubscribeFriendStatusListener) unsubscribeFriendStatusListener();
 
                 const modalTitle = document.getElementById('generic-modal-title');
+                const modalSubtitle = document.getElementById('generic-modal-subtitle');
                 const modalContent = document.getElementById('generic-modal-content');
                 const modalFooter = document.getElementById('generic-modal-footer');
                 const modalHeaderActions = document.getElementById('generic-modal-header-actions');
 
                 modalTitle.textContent = chatName;
+                modalSubtitle.textContent = ''; // Clear previous subtitle
                 modalContent.innerHTML = `<div id="chat-messages" class="h-96 overflow-y-auto flex flex-col-reverse p-2 space-y-2 space-y-reverse"></div>`;
                 
                 modalFooter.innerHTML = `
@@ -1753,10 +1790,10 @@
                 `;
                 
                 modalHeaderActions.innerHTML = '';
-                if (type === 'group' && groupData) {
-                    const isOwner = groupData.ownerId === currentUser.uid;
+                if (type === 'group' && contextData) {
+                    const isOwner = contextData.ownerId === currentUser.uid;
                     const isFounder = currentUserProfile.role === 'founder';
-                    const isMember = groupData.members.includes(currentUser.uid);
+                    const isMember = contextData.members.includes(currentUser.uid);
 
                     let dropdownHTML = '';
                     if (isMember) {
@@ -1765,7 +1802,7 @@
                     }
 
                     if (isFounder) {
-                        dropdownHTML += `<a href="#" id="toggle-public-btn" class="flex items-center gap-3 px-3 py-2 text-sm text-gray-300 hover:bg-slate-700 rounded-md"><i data-lucide="${groupData.isPublic ? 'lock' : 'globe-2'}" class="w-4 h-4"></i> ${groupData.isPublic ? 'Privat machen' : 'Öffentlich machen'}</a>`;
+                        dropdownHTML += `<a href="#" id="toggle-public-btn" class="flex items-center gap-3 px-3 py-2 text-sm text-gray-300 hover:bg-slate-700 rounded-md"><i data-lucide="${contextData.isPublic ? 'lock' : 'globe-2'}" class="w-4 h-4"></i> ${contextData.isPublic ? 'Privat machen' : 'Öffentlich machen'}</a>`;
                     }
                     
                     dropdownHTML += `<div class="border-t border-slate-700 my-1"></div>`;
@@ -1788,19 +1825,47 @@
                     document.getElementById('group-settings-btn').addEventListener('click', () => document.getElementById('group-settings-dropdown').classList.toggle('hidden'));
                     
                     const inviteBtn = document.getElementById('invite-friend-btn');
-                    if (inviteBtn) inviteBtn.addEventListener('click', () => showInviteFriendsModal(chatId, groupData.members));
+                    if (inviteBtn) inviteBtn.addEventListener('click', () => showInviteFriendsModal(chatId, contextData.members));
 
                     const manageBtn = document.getElementById('manage-members-btn');
-                    if (manageBtn) manageBtn.addEventListener('click', () => showGroupMembersModal(chatId, groupData.ownerId));
+                    if (manageBtn) manageBtn.addEventListener('click', () => showGroupMembersModal(chatId, contextData.ownerId));
 
                     const togglePublicBtn = document.getElementById('toggle-public-btn');
-                    if (togglePublicBtn) togglePublicBtn.addEventListener('click', () => toggleGroupPublicStatus(chatId, groupData.isPublic));
+                    if (togglePublicBtn) togglePublicBtn.addEventListener('click', () => toggleGroupPublicStatus(chatId, contextData.isPublic));
 
                     const deleteBtn = document.getElementById('delete-group-btn');
                     if (deleteBtn) deleteBtn.addEventListener('click', () => deleteGroup(chatId, chatName));
 
                     const leaveBtn = document.getElementById('leave-group-btn');
                     if (leaveBtn) leaveBtn.addEventListener('click', () => leaveGroup(chatId, chatName));
+
+                    // Fetch member details for @mentions
+                    const memberDetails = {};
+                    for (const memberId of contextData.members) {
+                        const userSnap = await getDoc(doc(db, 'users', memberId));
+                        if (userSnap.exists()) {
+                            memberDetails[memberId] = { id: userSnap.id, ...userSnap.data() };
+                        }
+                    }
+                    activeChatGroupData.memberDetails = memberDetails;
+
+                } else if (type === 'direct' && contextData.friendId) {
+                    // Start listening to the friend's status for the header subtitle
+                    const friendRef = doc(db, 'users', contextData.friendId);
+                    unsubscribeFriendStatusListener = onSnapshot(friendRef, (friendSnap) => {
+                        if (friendSnap.exists()) {
+                            const friendData = friendSnap.data();
+                            let statusText = '';
+                            if (friendData.presence === 'online') {
+                                statusText = 'Online';
+                            } else if (friendData.presence === 'away') {
+                                statusText = 'Abwesend';
+                            } else if (friendData.last_seen) {
+                                statusText = `Zuletzt online: ${formatLastSeen(friendData.last_seen)}`;
+                            }
+                            modalSubtitle.textContent = statusText;
+                        }
+                    });
                 }
 
                 lucide.createIcons();
@@ -1835,9 +1900,9 @@
                         const msg = {id: docSnap.id, ...docSnap.data()};
                         const messageEl = document.createElement('div');
                         const isSender = msg.senderId === currentUser.uid;
-                        const isGroupOwner = type === 'group' && groupData && groupData.ownerId === currentUser.uid;
+                        const isGroupOwner = type === 'group' && contextData && contextData.ownerId === currentUser.uid;
                         
-                        messageEl.className = `w-full flex group ${isSender ? 'justify-end' : 'justify-start'}`;
+                        messageEl.className = `w-full flex group relative ${isSender ? 'justify-end' : 'justify-start'}`;
                         
                         let readReceipt = '';
                         if (isSender && !msg.isDeleted) {
@@ -1861,6 +1926,18 @@
                             const linkedText = linkify(msg.text || '');
                             messageContentHTML = `<p class="text-white break-words">${linkedText}</p>`;
                         }
+
+                        // Render reactions
+                        let reactionsHTML = '';
+                        if (msg.reactions && Object.keys(msg.reactions).length > 0) {
+                            reactionsHTML += '<div class="absolute -bottom-4 flex gap-1 z-10">';
+                            for (const [emoji, uids] of Object.entries(msg.reactions)) {
+                                if (uids.length > 0) {
+                                    reactionsHTML += `<div class="glass-card px-2 py-0.5 rounded-full text-xs flex items-center gap-1"><span>${emoji}</span><span>${uids.length}</span></div>`;
+                                }
+                            }
+                            reactionsHTML += '</div>';
+                        }
                         
                         const timestampHTML = !msg.isDeleted ? `
                             <div class="flex items-center justify-end gap-1 mt-1">
@@ -1877,12 +1954,17 @@
                             : (msg.isDeleted ? 'bg-slate-800/50' : (msg.type === 'gif' || msg.type === 'image' ? 'bg-transparent' : 'bg-slate-700'));
 
                         messageEl.innerHTML = `
-                            <div class="flex items-end gap-2 ${isSender ? 'flex-row-reverse' : 'flex-row'}">
-                                <div class="max-w-xs lg:max-w-md px-3 py-2 rounded-lg ${messageBoxClass}">
-                                    ${senderNameHTML}
-                                    ${messageContentHTML}
-                                    ${timestampHTML}
+                            <div class="flex items-center gap-2 ${isSender ? 'flex-row-reverse' : 'flex-row'}">
+                                ${!isSender ? `<button data-message-id="${msg.id}" class="reaction-btn opacity-0 group-hover:opacity-100 text-gray-400 hover:text-white transition-opacity"><i data-lucide="smile-plus"></i></button>` : ''}
+                                <div class="flex items-end gap-2 ${isSender ? 'flex-row-reverse' : 'flex-row'}">
+                                    <div class="max-w-xs lg:max-w-md px-3 py-2 rounded-lg ${messageBoxClass} relative">
+                                        ${senderNameHTML}
+                                        ${messageContentHTML}
+                                        ${timestampHTML}
+                                        ${reactionsHTML}
+                                    </div>
                                 </div>
+                                ${isSender ? `<button data-message-id="${msg.id}" class="reaction-btn opacity-0 group-hover:opacity-100 text-gray-400 hover:text-white transition-opacity"><i data-lucide="smile-plus"></i></button>` : ''}
                             </div>
                         `;
                         
@@ -1915,6 +1997,11 @@
                     });
 
                     lucide.createIcons();
+                    messagesContainer.querySelectorAll('.reaction-btn').forEach(btn => {
+                        btn.addEventListener('click', (e) => {
+                            showReactionPicker(e.currentTarget, btn.dataset.messageId);
+                        });
+                    });
                 });
 
                 const typingIndicator = document.getElementById('typing-indicator');
@@ -1931,6 +2018,7 @@
                 });
 
                 const chatInput = document.getElementById('chat-input');
+                chatInput.addEventListener('keyup', (e) => handleMentionInput(e));
                 chatInput.addEventListener('input', () => {
                     clearTimeout(typingTimeout);
                     updateDoc(chatRoomRef, { [`typing.${currentUser.uid}`]: true });
@@ -2107,6 +2195,7 @@
             const modalFooter = document.getElementById('generic-modal-footer');
             const modalHeaderActions = document.getElementById('generic-modal-header-actions');
             modalTitle.textContent = 'Freunde einladen';
+            document.getElementById('generic-modal-subtitle').textContent = '';
             modalHeaderActions.innerHTML = '';
             modalContent.innerHTML = `<div id="invite-list" class="space-y-2 max-h-96 overflow-y-auto"></div>`;
             modalFooter.innerHTML = `<button id="close-invite-modal" class="btn-secondary w-full">Fertig</button>`;
@@ -2160,6 +2249,7 @@
             const modalFooter = document.getElementById('generic-modal-footer');
             const modalHeaderActions = document.getElementById('generic-modal-header-actions');
             modalTitle.textContent = 'Mitglieder verwalten';
+            document.getElementById('generic-modal-subtitle').textContent = '';
             modalHeaderActions.innerHTML = '';
             modalContent.innerHTML = `<div id="member-list" class="space-y-2 max-h-96 overflow-y-auto"></div>`;
             modalFooter.innerHTML = `<button id="close-members-modal" class="btn-secondary w-full">Schließen</button>`;
@@ -2226,6 +2316,7 @@
             const modalContent = document.getElementById('generic-modal-content');
             const modalFooter = document.getElementById('generic-modal-footer');
             modalTitle.textContent = `Rufe ${friendName} an`;
+            document.getElementById('generic-modal-subtitle').textContent = '';
             document.getElementById('generic-modal-header-actions').innerHTML = '';
             modalContent.innerHTML = `<div class="text-center p-8"><div class="loader mx-auto"></div><p class="mt-4">Verbinde...</p><p class="text-xs text-gray-500 mt-2">(Anruf-Funktion ist derzeit eine Simulation)</p></div>`;
             modalFooter.innerHTML = `<button id="end-call-btn" class="btn-primary bg-red-600 hover:bg-red-500 w-full">Anruf beenden</button>`;
@@ -2239,6 +2330,7 @@
             const modalContent = document.getElementById('generic-modal-content');
             const modalFooter = document.getElementById('generic-modal-footer');
             modalTitle.textContent = 'Profilbild ändern';
+            document.getElementById('generic-modal-subtitle').textContent = '';
             document.getElementById('generic-modal-header-actions').innerHTML = '';
             modalContent.innerHTML = `<div class="flex flex-col items-center"><img id="pic-preview" src="${currentUserProfile.photoURL || `https://placehold.co/128x128/1E293B/FFFFFF?text=${currentUserProfile.displayName.charAt(0)}`}" class="w-32 h-32 rounded-full object-cover mb-4 border-2 border-slate-600"><input type="file" id="pic-upload-input" class="hidden" accept="image/*"><label for="pic-upload-input" class="btn-secondary cursor-pointer">Bild auswählen</label></div>`;
             modalFooter.innerHTML = `<button id="submit-pic-upload" class="btn-primary w-full" disabled>Hochladen & Speichern</button>`;
@@ -2324,6 +2416,7 @@
             const modalContent = document.getElementById('generic-modal-content');
             const modalFooter = document.getElementById('generic-modal-footer');
             modalTitle.textContent = 'Meine Notizen';
+            document.getElementById('generic-modal-subtitle').textContent = '';
             document.getElementById('generic-modal-header-actions').innerHTML = '';
             modalContent.innerHTML = `<div id="notes-list" class="space-y-2"></div>`;
             modalFooter.innerHTML = `<form id="add-note-form" class="flex gap-2"><input id="note-input" class="flex-grow p-2 bg-slate-800 border border-slate-700 rounded-lg" placeholder="Neue Notiz..." autocomplete="off"><button type="submit" class="btn-primary"><i data-lucide="plus"></i></button></form>`;
@@ -2355,6 +2448,7 @@
             const modalContent = document.getElementById('generic-modal-content');
             const modalFooter = document.getElementById('generic-modal-footer');
             modalTitle.textContent = 'Einstellungen';
+            document.getElementById('generic-modal-subtitle').textContent = '';
             document.getElementById('generic-modal-header-actions').innerHTML = '';
             modalContent.innerHTML = `
                 <div class="space-y-4">
@@ -2384,6 +2478,7 @@
                 const modalContent = document.getElementById('generic-modal-content');
                 const modalFooter = document.getElementById('generic-modal-footer');
                 modalTitle.textContent = 'Anzeigename ändern';
+                document.getElementById('generic-modal-subtitle').textContent = '';
                 modalContent.innerHTML = `
                     <div>
                         <label for="change-displayname-input" class="block text-sm font-medium text-gray-300 mb-1">Neuer Anzeigename</label>
@@ -2426,6 +2521,7 @@
                 const modalContent = document.getElementById('generic-modal-content');
                 const modalFooter = document.getElementById('generic-modal-footer');
                 modalTitle.textContent = 'Passwort ändern';
+                document.getElementById('generic-modal-subtitle').textContent = '';
                 modalContent.innerHTML = `<p class="text-gray-300">Wir senden dir eine E-Mail an <strong>${currentUser.email}</strong>, mit der du dein Passwort zurücksetzen kannst.</p>`;
                 modalFooter.innerHTML = `<button id="send-password-reset-btn" class="btn-primary">E-Mail senden</button>`;
                 openModal(genericModal);
@@ -2758,6 +2854,110 @@
                 showToast("Bild konnte nicht gesendet werden.", "error");
             }
         };
+        
+        // --- NEW: MENTION & REACTION FUNCTIONS ---
+        const handleMentionInput = (event) => {
+            const input = event.target;
+            const popover = document.getElementById('mention-popover');
+            
+            if (activeChatType !== 'group' || !activeChatGroupData.memberDetails) {
+                popover.classList.add('hidden');
+                return;
+            }
+
+            const text = input.value;
+            const cursorPos = input.selectionStart;
+            const atMatch = text.slice(0, cursorPos).match(/@(\w*)$/);
+
+            if (atMatch) {
+                const searchTerm = atMatch[1].toLowerCase();
+                const members = Object.values(activeChatGroupData.memberDetails);
+                const suggestions = members.filter(m => 
+                    m.id !== currentUser.uid && m.displayName.toLowerCase().includes(searchTerm)
+                );
+
+                if (suggestions.length > 0) {
+                    popover.innerHTML = suggestions.map(s => 
+                        `<button class="mention-suggestion w-full text-left px-3 py-1.5 hover:bg-slate-700 rounded-md" data-name="${s.displayName}">${s.displayName}</button>`
+                    ).join('');
+                    
+                    const inputRect = input.getBoundingClientRect();
+                    popover.style.bottom = `${window.innerHeight - inputRect.top}px`;
+                    popover.style.left = `${inputRect.left}px`;
+                    popover.classList.remove('hidden');
+
+                    popover.querySelectorAll('.mention-suggestion').forEach(btn => {
+                        btn.onclick = () => {
+                            const mentionName = btn.dataset.name;
+                            const newText = text.slice(0, atMatch.index) + `@${mentionName} ` + text.slice(cursorPos);
+                            input.value = newText;
+                            input.focus();
+                            popover.classList.add('hidden');
+                        };
+                    });
+                } else {
+                    popover.classList.add('hidden');
+                }
+            } else {
+                popover.classList.add('hidden');
+            }
+        };
+
+        const showReactionPicker = (targetElement, messageId) => {
+            const picker = document.getElementById('reaction-picker-popover');
+            picker.innerHTML = PREDEFINED_REACTIONS.map(emoji => 
+                `<button class="reaction-emoji-btn text-2xl hover:scale-125 transition-transform" data-emoji="${emoji}">${emoji}</button>`
+            ).join('');
+
+            const rect = targetElement.getBoundingClientRect();
+            picker.style.top = `${rect.top - picker.offsetHeight - 5}px`;
+            picker.style.left = `${rect.left}px`;
+            picker.classList.remove('hidden');
+
+            picker.querySelectorAll('.reaction-emoji-btn').forEach(btn => {
+                btn.onclick = () => {
+                    handleReaction(messageId, btn.dataset.emoji);
+                    picker.classList.add('hidden');
+                };
+            });
+
+            const hidePickerOnClickOutside = (event) => {
+                if (!picker.contains(event.target) && !targetElement.contains(event.target)) {
+                    picker.classList.add('hidden');
+                    document.removeEventListener('click', hidePickerOnClickOutside);
+                }
+            };
+            setTimeout(() => document.addEventListener('click', hidePickerOnClickOutside), 0);
+        };
+
+        const handleReaction = async (messageId, emoji) => {
+            if (!activeChatId || !activeChatType) return;
+            const collectionPath = activeChatType === 'group' ? `groups/${activeChatId}/messages` : `directMessages/${activeChatId}/messages`;
+            const messageRef = doc(db, collectionPath, messageId);
+
+            try {
+                const messageSnap = await getDoc(messageRef);
+                if (!messageSnap.exists()) return;
+
+                const reactions = messageSnap.data().reactions || {};
+                const uidsForEmoji = reactions[emoji] || [];
+
+                if (uidsForEmoji.includes(currentUser.uid)) {
+                    // User is removing their reaction
+                    await updateDoc(messageRef, {
+                        [`reactions.${emoji}`]: arrayRemove(currentUser.uid)
+                    });
+                } else {
+                    // User is adding a reaction
+                    await updateDoc(messageRef, {
+                        [`reactions.${emoji}`]: arrayUnion(currentUser.uid)
+                    });
+                }
+            } catch (error) {
+                console.error("Error handling reaction:", error);
+                showToast("Reaktion konnte nicht verarbeitet werden.", "error");
+            }
+        };
 
 
         // --- INITIALIZATION ---
@@ -2786,11 +2986,16 @@
                 unsubscribeTypingListener();
                 unsubscribeTypingListener = null;
             }
+            if (unsubscribeFriendStatusListener) {
+                unsubscribeFriendStatusListener();
+                unsubscribeFriendStatusListener = null;
+            }
             hidePicker();
             
             if (wasChatOpen) {
                 activeChatId = null;
                 activeChatType = null;
+                activeChatGroupData = null;
             }
 
             closeModal(genericModal);
@@ -2805,6 +3010,10 @@
         document.addEventListener('click', (e) => {
             if (activePicker && !pickerPopover.contains(e.target) && !e.target.closest('#emoji-btn') && !e.target.closest('#gif-btn')) {
                 hidePicker();
+            }
+            const mentionPopover = document.getElementById('mention-popover');
+            if(!mentionPopover.classList.contains('hidden') && !mentionPopover.contains(e.target) && e.target.id !== 'chat-input') {
+                mentionPopover.classList.add('hidden');
             }
         });
 

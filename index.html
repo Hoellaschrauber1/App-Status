@@ -233,6 +233,7 @@
         let currentUser = null;
         let currentUserProfile = null;
         let unsubscribeUserListener = null;
+        let friendsStatusUnsubscribers = {};
         let isRegistering = false;
         let typingTimeout = null;
         let unsubscribeChatListener = null;
@@ -1550,7 +1551,24 @@
                 modalContent.innerHTML = `<div class="text-center p-4"><p class="text-red-400">Benutzersuche fehlgeschlagen.</p><p class="text-gray-400 mt-2 text-sm">Dies liegt wahrscheinlich an den Firestore-Sicherheitsregeln. Administratoren benötigen eine "list"-Berechtigung für die "users"-Sammlung, um alle Benutzer anzuzeigen.</p></div>`;
             }
         };
-        const sendFriendRequest = async (targetUserId) => { try { const targetUserRef = doc(db, `users/${targetUserId}`); const currentUserRef = doc(db, `users/${currentUser.uid}`); const batch = writeBatch(db); batch.update(targetUserRef, { friendRequestsReceived: arrayUnion(currentUser.uid) }); batch.update(currentUserRef, { friendRequestsSent: arrayUnion(targetUserId) }); await batch.commit(); showToast('Freundschaftsanfrage gesendet!', 'success'); } catch (error) { showToast(`Fehler: ${error.message}`, 'error'); } };
+        const sendFriendRequest = async (targetUserId) => { 
+            try { 
+                const targetUserRef = doc(db, `users/${targetUserId}`); 
+                const currentUserRef = doc(db, `users/${currentUser.uid}`); 
+                const batch = writeBatch(db); 
+                batch.update(targetUserRef, { friendRequestsReceived: arrayUnion(currentUser.uid) }); 
+                batch.update(currentUserRef, { friendRequestsSent: arrayUnion(targetUserId) }); 
+                await batch.commit(); 
+                showToast('Freundschaftsanfrage gesendet!', 'success'); 
+                if (currentUserProfile.friendRequestsSent) {
+                    currentUserProfile.friendRequestsSent.push(targetUserId);
+                } else {
+                    currentUserProfile.friendRequestsSent = [targetUserId];
+                }
+            } catch (error) { 
+                showToast(`Fehler: ${error.message}`, 'error'); 
+            } 
+        };
         const displayFriendRequests = async (requestUids) => {
             const container = document.getElementById('friend-requests-list'); if(!container) return;
             if (!requestUids || requestUids.length === 0) { container.innerHTML = `<p class="text-gray-500">Keine offenen Anfragen.</p>`; return; }
@@ -1572,45 +1590,60 @@
         const declineFriendRequest = async (senderId) => { try { const batch = writeBatch(db); const currentUserRef = doc(db, `users/${currentUser.uid}`); const senderUserRef = doc(db, `users/${senderId}`); batch.update(currentUserRef, { friendRequestsReceived: arrayRemove(senderId) }); batch.update(senderUserRef, { friendRequestsSent: arrayRemove(currentUser.uid) }); await batch.commit(); showToast('Anfrage abgelehnt.', 'info'); } catch (error) { showToast(`Fehler: ${error.message}`, 'error'); } };
         const displayFriends = async (friendUids) => {
             const container = document.getElementById('friends-list'); if(!container) return;
-            if (!friendUids || friendUids.length === 0) { container.innerHTML = `<p class="text-gray-500">Du hast noch keine Freunde.</p>`; return; }
-            container.innerHTML = '';
-            for (const uid of friendUids) {
-                const userDoc = await getDoc(doc(db, `users/${uid}`));
-                if (userDoc.exists()) {
-                    const user = {id: userDoc.id, ...userDoc.data()};
-                    const friendCard = document.createElement('div');
-                    friendCard.className = 'glass-card p-3 flex items-center justify-between';
-                    
-                    let statusHtml = '';
-                    if (user.presence === 'online') {
-                        statusHtml = `<i data-lucide="circle" class="w-3 h-3 text-green-500 fill-current"></i>`;
-                    } else if (user.presence === 'away') {
-                        statusHtml = `<i data-lucide="moon" class="w-3 h-3 text-yellow-400 fill-current"></i>`;
-                    } else if (user.last_seen) {
-                        statusHtml = `<span class="text-xs text-gray-500">${formatLastSeen(user.last_seen)}</span>`;
-                    }
+            
+            // Clear existing listeners to prevent duplicates
+            Object.values(friendsStatusUnsubscribers).forEach(unsub => unsub());
+            friendsStatusUnsubscribers = {};
 
-                    friendCard.innerHTML = `<div class="flex items-center gap-3">
-                        <div class="relative">
-                            <img src="${user.photoURL || `https://placehold.co/40x40/1E293B/FFFFFF?text=${user.displayName.charAt(0)}`}" class="w-10 h-10 rounded-full object-cover">
-                            <div class="absolute -bottom-1 -right-1" id="status-icon-${user.id}">${statusHtml}</div>
+            if (!friendUids || friendUids.length === 0) { container.innerHTML = `<p class="text-gray-500">Du hast noch keine Freunde.</p>`; return; }
+            
+            container.innerHTML = ''; // Clear list before re-rendering
+            
+            for (const uid of friendUids) {
+                const userDocRef = doc(db, 'users', uid);
+                friendsStatusUnsubscribers[uid] = onSnapshot(userDocRef, (userDoc) => {
+                    if (userDoc.exists()) {
+                        const user = {id: userDoc.id, ...userDoc.data()};
+                        
+                        let friendCard = document.getElementById(`friend-card-${user.id}`);
+                        if (!friendCard) {
+                            friendCard = document.createElement('div');
+                            friendCard.id = `friend-card-${user.id}`;
+                            friendCard.className = 'glass-card p-3 flex items-center justify-between';
+                            container.appendChild(friendCard);
+                        }
+                        
+                        let statusHtml = '';
+                        if (user.presence === 'online') {
+                            statusHtml = `<i data-lucide="circle" class="w-3 h-3 text-green-500 fill-current"></i>`;
+                        } else if (user.presence === 'away') {
+                            statusHtml = `<i data-lucide="moon" class="w-3 h-3 text-yellow-400 fill-current"></i>`;
+                        } else if (user.last_seen) {
+                            statusHtml = `<span class="text-xs text-gray-500">${formatLastSeen(user.last_seen)}</span>`;
+                        }
+
+                        friendCard.innerHTML = `<div class="flex items-center gap-3">
+                            <div class="relative">
+                                <img src="${user.photoURL || `https://placehold.co/40x40/1E293B/FFFFFF?text=${user.displayName.charAt(0)}`}" class="w-10 h-10 rounded-full object-cover">
+                                <div class="absolute -bottom-1 -right-1" id="status-icon-${user.id}">${statusHtml}</div>
+                            </div>
+                            <p class="font-semibold text-white">${user.displayName}</p>
                         </div>
-                        <p class="font-semibold text-white">${user.displayName}</p>
-                    </div>
-                    <div class="flex items-center gap-2">
-                        <button data-id="${user.id}" data-name="${user.displayName}" class="call-friend-btn text-green-400 hover:text-green-300"><i data-lucide="phone"></i></button>
-                        <button data-id="${user.id}" data-name="${user.displayName}" class="chat-friend-btn text-blue-400 hover:text-blue-300"><i data-lucide="message-circle"></i></button>
-                        <button data-id="${user.id}" data-name="${user.displayName}" class="report-user-btn text-yellow-400 hover:text-yellow-300"><i data-lucide="flag"></i></button>
-                        <button data-id="${user.id}" class="remove-friend-btn text-red-500 hover:text-red-400"><i data-lucide="user-minus"></i></button>
-                    </div>`;
-                    container.appendChild(friendCard);
-                }
+                        <div class="flex items-center gap-2">
+                            <button data-id="${user.id}" data-name="${user.displayName}" class="call-friend-btn text-green-400 hover:text-green-300"><i data-lucide="phone"></i></button>
+                            <button data-id="${user.id}" data-name="${user.displayName}" class="chat-friend-btn text-blue-400 hover:text-blue-300"><i data-lucide="message-circle"></i></button>
+                            <button data-id="${user.id}" data-name="${user.displayName}" class="report-user-btn text-yellow-400 hover:text-yellow-300"><i data-lucide="flag"></i></button>
+                            <button data-id="${user.id}" class="remove-friend-btn text-red-500 hover:text-red-400"><i data-lucide="user-minus"></i></button>
+                        </div>`;
+                        
+                        lucide.createIcons();
+                        friendCard.querySelector('.remove-friend-btn').addEventListener('click', () => removeFriend(user.id));
+                        friendCard.querySelector('.chat-friend-btn').addEventListener('click', () => openDirectChat(user.id, user.displayName));
+                        friendCard.querySelector('.call-friend-btn').addEventListener('click', () => showCallingModal(user.displayName));
+                        friendCard.querySelector('.report-user-btn').addEventListener('click', () => showReportModal(user.id, 'user', { userName: user.displayName }));
+                    }
+                });
             }
-            lucide.createIcons();
-            container.querySelectorAll('.remove-friend-btn').forEach(btn => { btn.addEventListener('click', () => removeFriend(btn.dataset.id)); });
-            container.querySelectorAll('.chat-friend-btn').forEach(btn => { btn.addEventListener('click', () => openDirectChat(btn.dataset.id, btn.dataset.name)); });
-            container.querySelectorAll('.call-friend-btn').forEach(btn => { btn.addEventListener('click', () => showCallingModal(btn.dataset.name)); });
-            container.querySelectorAll('.report-user-btn').forEach(btn => { btn.addEventListener('click', () => showReportModal(btn.dataset.id, 'user', { userName: btn.dataset.name })); });
         };
         const removeFriend = async (friendId) => { showConfirmationModal('Bist du sicher, dass du diesen Freund entfernen möchtest?', async () => { try { const batch = writeBatch(db); const currentUserRef = doc(db, `users/${currentUser.uid}`); const friendUserRef = doc(db, `users/${friendId}`); batch.update(currentUserRef, { friends: arrayRemove(friendId) }); batch.update(friendUserRef, { friends: arrayRemove(currentUser.uid) }); await batch.commit(); showToast('Freund entfernt.', 'info'); } catch (error) { showToast(`Fehler: ${error.message}`, 'error'); } }); };
         
@@ -1708,18 +1741,26 @@
                 if (type === 'group' && groupData) {
                     const isOwner = groupData.ownerId === currentUser.uid;
                     const isFounder = currentUserProfile.role === 'founder';
-                    let dropdownHTML = `<a href="#" id="invite-friend-btn" class="flex items-center gap-3 px-3 py-2 text-sm text-gray-300 hover:bg-slate-700 rounded-md"><i data-lucide="user-plus" class="w-4 h-4"></i> Freunde einladen</a>`;
-                    
-                    if(isOwner) {
-                        dropdownHTML += `<a href="#" id="manage-members-btn" class="flex items-center gap-3 px-3 py-2 text-sm text-gray-300 hover:bg-slate-700 rounded-md"><i data-lucide="users" class="w-4 h-4"></i> Mitglieder verwalten</a>`;
+                    const isMember = groupData.members.includes(currentUser.uid);
+
+                    let dropdownHTML = '';
+                    if (isMember) {
+                         dropdownHTML += `<a href="#" id="manage-members-btn" class="flex items-center gap-3 px-3 py-2 text-sm text-gray-300 hover:bg-slate-700 rounded-md"><i data-lucide="users" class="w-4 h-4"></i> ${isOwner ? 'Mitglieder verwalten' : 'Mitglieder anzeigen'}</a>`;
+                         dropdownHTML += `<a href="#" id="invite-friend-btn" class="flex items-center gap-3 px-3 py-2 text-sm text-gray-300 hover:bg-slate-700 rounded-md"><i data-lucide="user-plus" class="w-4 h-4"></i> Freunde einladen</a>`;
                     }
+
                     if (isFounder) {
                         dropdownHTML += `<a href="#" id="toggle-public-btn" class="flex items-center gap-3 px-3 py-2 text-sm text-gray-300 hover:bg-slate-700 rounded-md"><i data-lucide="${groupData.isPublic ? 'lock' : 'globe-2'}" class="w-4 h-4"></i> ${groupData.isPublic ? 'Privat machen' : 'Öffentlich machen'}</a>`;
                     }
+                    
                     dropdownHTML += `<div class="border-t border-slate-700 my-1"></div>`;
-                    dropdownHTML += isOwner 
-                                    ? `<a href="#" id="delete-group-btn" class="flex items-center gap-3 px-3 py-2 text-sm text-red-400 hover:bg-red-500 hover:text-white rounded-md"><i data-lucide="trash" class="w-4 h-4"></i> Gruppe löschen</a>`
-                                    : `<a href="#" id="leave-group-btn" class="flex items-center gap-3 px-3 py-2 text-sm text-red-400 hover:bg-red-500 hover:text-white rounded-md"><i data-lucide="log-out" class="w-4 h-4"></i> Gruppe verlassen</a>`;
+
+                    if (isOwner || isFounder) {
+                        dropdownHTML += `<a href="#" id="delete-group-btn" class="flex items-center gap-3 px-3 py-2 text-sm text-red-400 hover:bg-red-500 hover:text-white rounded-md"><i data-lucide="trash" class="w-4 h-4"></i> Gruppe löschen</a>`;
+                    }
+                    if (isMember && !isOwner) {
+                         dropdownHTML += `<a href="#" id="leave-group-btn" class="flex items-center gap-3 px-3 py-2 text-sm text-red-400 hover:bg-red-500 hover:text-white rounded-md"><i data-lucide="log-out" class="w-4 h-4"></i> Gruppe verlassen</a>`;
+                    }
 
                     modalHeaderActions.innerHTML = `
                         <div class="relative">
@@ -1730,18 +1771,21 @@
                         </div>`;
 
                     document.getElementById('group-settings-btn').addEventListener('click', () => document.getElementById('group-settings-dropdown').classList.toggle('hidden'));
-                    document.getElementById('invite-friend-btn').addEventListener('click', () => showInviteFriendsModal(chatId, groupData.members));
-                    if (isOwner) {
-                        document.getElementById('manage-members-btn').addEventListener('click', () => showGroupMembersModal(chatId, groupData.ownerId));
-                    }
-                    if (isFounder) {
-                        document.getElementById('toggle-public-btn').addEventListener('click', () => toggleGroupPublicStatus(chatId, groupData.isPublic));
-                    }
-                    if (isOwner) {
-                        document.getElementById('delete-group-btn').addEventListener('click', () => deleteGroup(chatId, chatName));
-                    } else {
-                        document.getElementById('leave-group-btn').addEventListener('click', () => leaveGroup(chatId, chatName));
-                    }
+                    
+                    const inviteBtn = document.getElementById('invite-friend-btn');
+                    if (inviteBtn) inviteBtn.addEventListener('click', () => showInviteFriendsModal(chatId, groupData.members));
+
+                    const manageBtn = document.getElementById('manage-members-btn');
+                    if (manageBtn) manageBtn.addEventListener('click', () => showGroupMembersModal(chatId, groupData.ownerId));
+
+                    const togglePublicBtn = document.getElementById('toggle-public-btn');
+                    if (togglePublicBtn) togglePublicBtn.addEventListener('click', () => toggleGroupPublicStatus(chatId, groupData.isPublic));
+
+                    const deleteBtn = document.getElementById('delete-group-btn');
+                    if (deleteBtn) deleteBtn.addEventListener('click', () => deleteGroup(chatId, chatName));
+
+                    const leaveBtn = document.getElementById('leave-group-btn');
+                    if (leaveBtn) leaveBtn.addEventListener('click', () => leaveGroup(chatId, chatName));
                 }
 
                 lucide.createIcons();
@@ -1995,10 +2039,21 @@
         };
 
         const deleteGroup = async (groupId, groupName) => {
+            const groupRef = doc(db, 'groups', groupId);
+            const groupSnap = await getDoc(groupRef);
+            if (!groupSnap.exists()) {
+                showToast("Gruppe nicht gefunden.", "error");
+                return;
+            }
+            const groupData = groupSnap.data();
+            if (groupData.ownerId !== currentUser.uid && currentUserProfile.role !== 'founder') {
+                showToast("Nur der Besitzer oder Gründer kann diese Gruppe löschen.", "error");
+                return;
+            }
+
             showConfirmationModal(`Möchtest du die Gruppe "${groupName}" wirklich löschen?`, async () => {
                 showLoader("Lösche Gruppe...");
                 try {
-                    const groupRef = doc(db, 'groups', groupId);
                     await updateDoc(groupRef, {
                         isDeleted: true,
                         members: []
@@ -2699,7 +2754,11 @@
         
         // --- Event Listeners for Modals ---
         document.getElementById('close-auth-modal').addEventListener('click', () => closeModal(authModal));
-        document.getElementById('close-chats-friends-modal').addEventListener('click', () => closeModal(chatsFriendsModal));
+        document.getElementById('close-chats-friends-modal').addEventListener('click', () => {
+            closeModal(chatsFriendsModal);
+            Object.values(friendsStatusUnsubscribers).forEach(unsub => unsub());
+            friendsStatusUnsubscribers = {};
+        });
         
         document.getElementById('close-generic-modal').addEventListener('click', () => {
             const wasChatOpen = activeChatId !== null;

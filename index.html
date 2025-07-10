@@ -119,8 +119,8 @@
     </div>
 
     <!-- Chats & Friends Modal -->
-    <div id="chats-friends-modal" class="hidden fixed inset-0 flex items-center justify-center z-50 p-4 modal-enter">
-        <div class="glass-card w-full max-w-2xl h-[70vh] flex flex-col p-6 shadow-2xl">
+    <div id="chats-friends-modal" class="hidden fixed inset-0 flex items-center justify-center z-50 p-0 md:p-4 modal-enter">
+        <div class="glass-card w-screen h-screen rounded-none p-4 md:w-full md:max-w-2xl md:h-[70vh] md:rounded-xl md:p-6 flex flex-col shadow-2xl">
             <div class="flex justify-between items-center mb-4">
                 <h2 class="text-2xl font-bold text-white">Chats & Freunde</h2>
                 <button id="close-chats-friends-modal" class="text-gray-400 hover:text-white"><i data-lucide="x"></i></button>
@@ -136,8 +136,8 @@
     </div>
     
     <!-- Other Modals (Notes, Settings, Profile Pic, Admin, Video Player) will use this generic structure -->
-    <div id="generic-modal" class="hidden fixed inset-0 flex items-center justify-center z-50 p-4 modal-enter">
-        <div class="glass-card w-full max-w-4xl h-auto max-h-[90vh] flex flex-col p-6 shadow-2xl">
+    <div id="generic-modal" class="hidden fixed inset-0 flex items-center justify-center z-50 p-0 md:p-4 modal-enter">
+        <div class="glass-card w-screen h-screen rounded-none p-4 md:w-full md:max-w-4xl md:h-auto md:max-h-[90vh] md:rounded-xl md:p-6 flex flex-col shadow-2xl">
             <div class="flex justify-between items-center mb-4 pb-4 border-b border-slate-700">
                 <h2 id="generic-modal-title" class="text-2xl font-bold text-white flex-grow"></h2>
                 <div id="generic-modal-header-actions" class="flex items-center gap-2"></div>
@@ -173,8 +173,13 @@
     </div>
 
     <!-- Emoji & GIF Picker Popover -->
-    <div id="chat-picker-popover" class="hidden fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[60] glass-card p-2 rounded-lg w-full max-w-sm">
+    <div id="chat-picker-popover" class="hidden fixed z-[60] glass-card p-2 rounded-lg w-full max-w-sm">
         <!-- Content will be injected by JS -->
+    </div>
+
+    <!-- Mention Popover -->
+    <div id="mention-popover" class="hidden absolute z-[60] glass-card p-1 rounded-lg w-64 max-h-48 overflow-y-auto">
+        <!-- Mention suggestions will be injected here -->
     </div>
 
 
@@ -312,17 +317,20 @@
 
         const linkify = (inputText) => {
             if (!inputText) return '';
-            let replacedText;
+            
+            // Regex to find @mentions, but not in HTML tags
+            const mentionPattern = /@(\w+)/g;
+            let linkedText = inputText.replace(mentionPattern, '<span class="text-blue-400 font-bold">@$1</span>');
 
             // URLs starting with http://, https://, or ftp://
             const urlPattern = /(\b(https?|ftp|file):\/\/[-A-Z0-9+&@#\/%?=~_|!:,.;]*[-A-Z0-9+&@#\/%=~_|])/ig;
-            replacedText = inputText.replace(urlPattern, '<a href="$1" target="_blank" rel="noopener noreferrer" class="text-blue-400 hover:underline">$1</a>');
+            linkedText = linkedText.replace(urlPattern, '<a href="$1" target="_blank" rel="noopener noreferrer" class="text-blue-400 hover:underline">$1</a>');
 
             // URLs starting with "www." (without // before it)
             const wwwPattern = /(^|[^\/])(www\.[\S]+(\b|$))/gim;
-            replacedText = replacedText.replace(wwwPattern, '$1<a href="http://$2" target="_blank" rel="noopener noreferrer" class="text-blue-400 hover:underline">$2</a>');
+            linkedText = linkedText.replace(wwwPattern, '$1<a href="http://$2" target="_blank" rel="noopener noreferrer" class="text-blue-400 hover:underline">$2</a>');
 
-            return replacedText;
+            return linkedText;
         };
         
         const formatLastSeen = (timestamp) => {
@@ -1376,6 +1384,13 @@
             }
             
             openModal(chatsFriendsModal);
+            const chatsTab = chatsFriendsModal.querySelector('.tab-btn[data-tab="chats"]');
+            const friendsTab = chatsFriendsModal.querySelector('.tab-btn[data-tab="friends"]');
+            chatsTab.classList.add('text-white', 'border-blue-500');
+            chatsTab.classList.remove('text-gray-400', 'border-transparent');
+            friendsTab.classList.add('text-gray-400', 'border-transparent');
+            friendsTab.classList.remove('text-white', 'border-blue-500');
+
             renderChatsTab();
             chatsFriendsModal.querySelectorAll('.tab-btn').forEach(btn => {
                 btn.onclick = (e) => {

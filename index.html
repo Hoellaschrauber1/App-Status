@@ -182,7 +182,8 @@
     <script type="module">
         // Import Firebase modules
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getStorage, ref, getDownloadURL, uploadBytesResumable, deleteObject } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
+        import { getDatabase, ref as dbRef, onValue, set, onDisconnect, serverTimestamp as rtdbServerTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-database.js";
+        import { getStorage, ref as storageRef, getDownloadURL, uploadBytesResumable, deleteObject } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
         import { getAuth, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, updateProfile, deleteUser, sendEmailVerification, sendPasswordResetEmail } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, getDoc, getDocs, collection, writeBatch, serverTimestamp, query, where, onSnapshot, updateDoc, arrayUnion, arrayRemove, addDoc, orderBy, deleteDoc, increment, deleteField } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
@@ -194,15 +195,17 @@
             storageBucket: "social-media-1711a.appspot.com",
             messagingSenderId: "228987477362",
             appId: "1:228987477362:web:0aa477a08b4d14572e51eb",
-            measurementId: "G-SNQC7S4CJB"
+            measurementId: "G-SNQC7S4CJB",
+            databaseURL: "https://social-media-1711a-default-rtdb.europe-west1.firebasedatabase.app"
         };
 
         // --- APP INITIALIZATION ---
-        let app, auth, db, storage;
+        let app, auth, db, rtdb, storage;
         try {
             app = initializeApp(firebaseConfig);
             auth = getAuth(app);
             db = getFirestore(app);
+            rtdb = getDatabase(app);
             storage = getStorage(app);
         } catch (e) {
             document.getElementById('main-content').innerHTML = `<div class="text-center p-8"><h2 class="text-2xl font-bold text-red-500">Fehler bei der Firebase-Initialisierung!</h2><p class="mt-2 text-gray-400">Fehler: ${e.message}</p></div>`;
@@ -243,6 +246,7 @@
         let mediaRecorder = null;
         let isRecording = false;
         let audioChunks = [];
+        let inactivityTimer = null;
 
         // --- HELPER & MODAL FUNCTIONS ---
         const showLoader = (text = 'Lade...') => {
@@ -631,6 +635,15 @@
 
         // --- AUTHENTICATION LOGIC ---
         const handleLogout = async () => {
+            if (currentUser) {
+                const userStatusFirestoreRef = doc(db, 'users', currentUser.uid);
+                await updateDoc(userStatusFirestoreRef, {
+                    presence: 'offline',
+                    last_seen: serverTimestamp(),
+                });
+                const userStatusDatabaseRef = dbRef(rtdb, '/status/' + currentUser.uid);
+                set(userStatusDatabaseRef, { state: 'offline', last_changed: rtdbServerTimestamp() });
+            }
             showLoader('Abmelden...');
             try {
                 await signOut(auth);
@@ -642,6 +655,77 @@
             }
         };
 
+        const setupPresenceSystem = (uid) => {
+            const userStatusDatabaseRef = dbRef(rtdb, '/status/' + uid);
+            const userStatusFirestoreRef = doc(db, '/users/' + uid);
+
+            const isOfflineForDatabase = {
+                state: 'offline',
+                last_changed: rtdbServerTimestamp(),
+            };
+            const isOnlineForDatabase = {
+                state: 'online',
+                last_changed: rtdbServerTimestamp(),
+            };
+             const isAwayForDatabase = {
+                state: 'away',
+                last_changed: rtdbServerTimestamp(),
+            };
+
+            const isOfflineForFirestore = {
+                presence: 'offline',
+                last_seen: serverTimestamp(),
+            };
+            const isOnlineForFirestore = {
+                presence: 'online',
+                last_seen: serverTimestamp(),
+            };
+             const isAwayForFirestore = {
+                presence: 'away',
+                last_seen: serverTimestamp(),
+            };
+
+            onValue(dbRef(rtdb, '.info/connected'), (snapshot) => {
+                if (snapshot.val() === false) {
+                    updateDoc(userStatusFirestoreRef, isOfflineForFirestore);
+                    return;
+                }
+
+                onDisconnect(userStatusDatabaseRef).set(isOfflineForDatabase).then(() => {
+                    updateDoc(userStatusFirestoreRef, isOfflineForFirestore);
+                });
+
+                set(userStatusDatabaseRef, isOnlineForDatabase);
+                updateDoc(userStatusFirestoreRef, isOnlineForFirestore);
+
+                const resetTimer = () => {
+                    if (inactivityTimer) clearTimeout(inactivityTimer);
+                    
+                    const currentStatusRef = dbRef(rtdb, '/status/' + uid + '/state');
+                    onValue(currentStatusRef, (snap) => {
+                        if (snap.val() === 'away') {
+                             set(userStatusDatabaseRef, isOnlineForDatabase);
+                             updateDoc(userStatusFirestoreRef, isOnlineForFirestore);
+                        }
+                    }, { onlyOnce: true });
+
+                    inactivityTimer = setTimeout(() => {
+                        set(userStatusDatabaseRef, isAwayForDatabase);
+                        updateDoc(userStatusFirestoreRef, isAwayForFirestore);
+                    }, 150000); // 2.5 minutes
+                };
+
+                window.addEventListener('mousemove', resetTimer, { passive: true });
+                window.addEventListener('mousedown', resetTimer, { passive: true });
+                window.addEventListener('keypress', resetTimer, { passive: true });
+                window.addEventListener('scroll', resetTimer, { passive: true });
+                window.addEventListener('touchstart', resetTimer, { passive: true });
+                
+                resetTimer();
+            });
+        };
+
+
         onAuthStateChanged(auth, async (user) => {
             if (isRegistering) { return; }
 
@@ -649,6 +733,9 @@
                 currentUser = user; 
                 if (unsubscribeUserListener) unsubscribeUserListener();
                 const userDocRef = doc(db, `users/${user.uid}`);
+                
+                setupPresenceSystem(user.uid);
+
                 unsubscribeUserListener = onSnapshot(userDocRef, async (docSnap) => {
                     if (docSnap.exists()) {
                         currentUserProfile = { id: docSnap.id, ...docSnap.data() };
@@ -1070,8 +1157,8 @@
                 }
                 const videoData = videoSnap.data();
 
-                const videoFileRef = ref(storage, videoData.videoUrl);
-                const thumbFileRef = ref(storage, videoData.thumbnailUrl);
+                const videoFileRef = storageRef(storage, videoData.videoUrl);
+                const thumbFileRef = storageRef(storage, videoData.thumbnailUrl);
                 await deleteObject(videoFileRef);
                 await deleteObject(thumbFileRef);
 
@@ -1177,10 +1264,11 @@
                     </div>`;
                 modalFooter.innerHTML = '';
 
-                const uploadFile = (file, storageRef, statusText) => {
+                const uploadFile = (file, storagePath, statusText) => {
                     return new Promise((resolve, reject) => {
+                        const fileRef = storageRef(storage, storagePath);
                         const metadata = { contentType: file.type };
-                        const uploadTask = uploadBytesResumable(storageRef, file, metadata);
+                        const uploadTask = uploadBytesResumable(fileRef, file, metadata);
                         const uploadStartTime = Date.now();
                         const statusEl = document.getElementById('upload-status-text');
                         if (statusEl) statusEl.textContent = statusText;
@@ -1236,11 +1324,11 @@
 
                 try {
                     await auth.currentUser.getIdToken(true);
-                    const thumbRef = ref(storage, `thumbnails/${Date.now()}_${thumbnailFile.name}`);
-                    const thumbnailUrl = await uploadFile(thumbnailFile, thumbRef, 'Lade Vorschaubild hoch...');
+                    const thumbPath = `thumbnails/${Date.now()}_${thumbnailFile.name}`;
+                    const thumbnailUrl = await uploadFile(thumbnailFile, thumbPath, 'Lade Vorschaubild hoch...');
                     
-                    const videoRef = ref(storage, `videos/${Date.now()}_${videoFile.name}`);
-                    const videoUrl = await uploadFile(videoFile, videoRef, 'Lade Video hoch...');
+                    const videoPath = `videos/${Date.now()}_${videoFile.name}`;
+                    const videoUrl = await uploadFile(videoFile, videoPath, 'Lade Video hoch...');
                     
                     const statusEl = document.getElementById('upload-status-text');
                     if (statusEl) statusEl.textContent = 'Verarbeite Daten...';
@@ -1466,7 +1554,21 @@
                     const user = {id: userDoc.id, ...userDoc.data()};
                     const friendCard = document.createElement('div');
                     friendCard.className = 'glass-card p-3 flex items-center justify-between';
-                    friendCard.innerHTML = `<div class="flex items-center gap-3"><img src="${user.photoURL || `https://placehold.co/40x40/1E293B/FFFFFF?text=${user.displayName.charAt(0)}`}" class="w-10 h-10 rounded-full object-cover"><p class="font-semibold text-white">${user.displayName}</p></div>
+                    
+                    let statusIcon = '';
+                    if (user.presence === 'online') {
+                        statusIcon = `<i data-lucide="circle" class="w-3 h-3 text-green-500 fill-current"></i>`;
+                    } else if (user.presence === 'away') {
+                        statusIcon = `<i data-lucide="moon" class="w-3 h-3 text-yellow-400 fill-current"></i>`;
+                    }
+
+                    friendCard.innerHTML = `<div class="flex items-center gap-3">
+                        <div class="relative">
+                            <img src="${user.photoURL || `https://placehold.co/40x40/1E293B/FFFFFF?text=${user.displayName.charAt(0)}`}" class="w-10 h-10 rounded-full object-cover">
+                            <div class="absolute -bottom-1 -right-1" id="status-icon-${user.id}">${statusIcon}</div>
+                        </div>
+                        <p class="font-semibold text-white">${user.displayName}</p>
+                    </div>
                     <div class="flex items-center gap-2">
                         <button data-id="${user.id}" data-name="${user.displayName}" class="call-friend-btn text-green-400 hover:text-green-300"><i data-lucide="phone"></i></button>
                         <button data-id="${user.id}" data-name="${user.displayName}" class="chat-friend-btn text-blue-400 hover:text-blue-300"><i data-lucide="message-circle"></i></button>
@@ -2073,9 +2175,9 @@
                 
                 try {
                     await auth.currentUser.getIdToken(true);
-                    const storageRef = ref(storage, `profilePictures/${currentUser.uid}`);
+                    const fileRef = storageRef(storage, `profilePictures/${currentUser.uid}`);
                     const metadata = { contentType: selectedFile.type };
-                    const uploadTask = uploadBytesResumable(storageRef, selectedFile, metadata);
+                    const uploadTask = uploadBytesResumable(fileRef, selectedFile, metadata);
 
                     uploadTask.on('state_changed', 
                         (snapshot) => {
@@ -2420,13 +2522,13 @@
                 mediaRecorder.onstop = async () => {
                     const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
                     const audioFileName = `audio_${Date.now()}.webm`;
-                    const storageRef = ref(storage, `chatAudio/${activeChatId}/${audioFileName}`);
+                    const fileRef = storageRef(storage, `chatAudio/${activeChatId}/${audioFileName}`);
                     
                     showLoader('Lade Sprachnachricht hoch...');
                     try {
-                        const uploadTask = uploadBytesResumable(storageRef, audioBlob);
+                        const uploadTask = uploadBytesResumable(fileRef, audioBlob);
                         await uploadTask;
-                        const downloadURL = await getDownloadURL(storageRef);
+                        const downloadURL = await getDownloadURL(fileRef);
                         await sendAudioMessage(downloadURL, activeChatId);
                     } catch (error) {
                         console.error("Error uploading audio:", error);
@@ -2499,8 +2601,8 @@
             showLoader("Lade Bild hoch...");
             try {
                 await auth.currentUser.getIdToken(true);
-                const storageRef = ref(storage, `chatImages/${activeChatId}/${Date.now()}_${file.name}`);
-                const uploadTask = uploadBytesResumable(storageRef, file, { contentType: file.type });
+                const fileRef = storageRef(storage, `chatImages/${activeChatId}/${Date.now()}_${file.name}`);
+                const uploadTask = uploadBytesResumable(fileRef, file, { contentType: file.type });
 
                 uploadTask.on('state_changed',
                     (snapshot) => {

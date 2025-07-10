@@ -305,6 +305,21 @@
             document.getElementById('confirm-cancel-btn').onclick = () => closeModal(genericModal);
         };
 
+        const linkify = (inputText) => {
+            if (!inputText) return '';
+            let replacedText;
+
+            // URLs starting with http://, https://, or ftp://
+            const urlPattern = /(\b(https?|ftp|file):\/\/[-A-Z0-9+&@#\/%?=~_|!:,.;]*[-A-Z0-9+&@#\/%=~_|])/ig;
+            replacedText = inputText.replace(urlPattern, '<a href="$1" target="_blank" rel="noopener noreferrer" class="text-blue-400 hover:underline">$1</a>');
+
+            // URLs starting with "www." (without // before it)
+            const wwwPattern = /(^|[^\/])(www\.[\S]+(\b|$))/gim;
+            replacedText = replacedText.replace(wwwPattern, '$1<a href="http://$2" target="_blank" rel="noopener noreferrer" class="text-blue-400 hover:underline">$2</a>');
+
+            return replacedText;
+        };
+
         // --- ADMIN & REPORTING FUNCTIONS ---
         const showReportModal = (contentId, contentType, context = {}) => {
             const modalTitle = document.getElementById('generic-modal-title');
@@ -406,6 +421,12 @@
                         banButtonHtml = `<button data-id="${user.id}" data-banned="${user.banned}" class="toggle-ban-btn ${user.banned ? 'bg-green-600 hover:bg-green-500' : 'bg-red-600 hover:bg-red-500'} text-white font-bold py-2 px-4 rounded-lg text-sm flex-grow">${user.banned ? 'Entsperren' : 'Sperren'}</button>`;
                     }
 
+                    let verifyButtonHtml = '';
+                    if (!user.emailVerified && !user.isManuallyVerified && (currentUserProfile.role === 'admin' || currentUserProfile.role === 'founder')) {
+                        verifyButtonHtml = `<button data-id="${user.id}" class="manual-verify-btn btn-secondary bg-green-600 hover:bg-green-500 text-sm flex-grow">Verifizieren</button>`;
+                    }
+
+
                     userCardsHtml += `
                         <div class="glass-card p-4 rounded-lg mb-4">
                             <div class="flex justify-between items-start">
@@ -424,6 +445,7 @@
                             <div class="mt-4 pt-4 border-t border-slate-700 flex gap-2">
                                 ${adminButtonHtml}
                                 ${banButtonHtml}
+                                ${verifyButtonHtml}
                             </div>
                         </div>
                     `;
@@ -432,10 +454,28 @@
                 lucide.createIcons();
                 adminContentArea.querySelectorAll('.toggle-admin-btn').forEach(btn => { btn.addEventListener('click', () => toggleAdminRole(btn.dataset.id, btn.dataset.role)); });
                 adminContentArea.querySelectorAll('.toggle-ban-btn').forEach(btn => { btn.addEventListener('click', () => toggleBanStatus(btn.dataset.id, btn.dataset.banned === 'true')); });
+                adminContentArea.querySelectorAll('.manual-verify-btn').forEach(btn => { btn.addEventListener('click', () => handleManualVerify(btn.dataset.id)); });
             } catch (error) {
                 console.error("Error fetching users for admin panel:", error);
                 adminContentArea.innerHTML = `<div class="text-center p-4"><p class="text-red-400">Fehler beim Laden der Benutzerliste.</p><p class="text-gray-400 mt-2 text-sm">Dies liegt wahrscheinlich an den Firestore-Sicherheitsregeln. Administratoren benötigen eine "list"-Berechtigung für die "users"-Sammlung, um alle Benutzer anzuzeigen.</p></div>`;
             }
+        };
+
+        const handleManualVerify = async (userId) => {
+            showConfirmationModal('Möchtest du diesen Nutzer wirklich manuell verifizieren?', async () => {
+                showLoader('Verifiziere Nutzer...');
+                try {
+                    const userRef = doc(db, 'users', userId);
+                    await updateDoc(userRef, { isManuallyVerified: true });
+                    showToast('Nutzer erfolgreich verifiziert.', 'success');
+                    renderAdminUsers(); // Refresh the admin panel
+                } catch (error) {
+                    console.error("Error manually verifying user:", error);
+                    showToast('Fehler bei der manuellen Verifizierung.', 'error');
+                } finally {
+                    hideLoader();
+                }
+            });
         };
 
         const renderAdminReports = async () => {
@@ -629,7 +669,7 @@
 
                         if (currentUserProfile.banned) {
                             await renderBannedScreen();
-                        } else if (!user.emailVerified) {
+                        } else if (!user.emailVerified && !currentUserProfile.isManuallyVerified) {
                             renderVerificationScreen();
                         } else {
                             updateUIForLoggedInUser();
@@ -724,7 +764,7 @@
                 <div class="glass-card p-8">
                     <i data-lucide="mail-check" class="w-16 h-16 mx-auto text-blue-400 mb-4"></i>
                     <h2 class="text-2xl font-bold">Bestätige deine E-Mail-Adresse</h2>
-                    <p class="text-gray-400 mt-2 mb-6">Wir haben eine Bestätigungs-E-Mail an <strong>${auth.currentUser.email}</strong> gesendet. Bitte klicke auf den Link in der E-Mail, um dein Konto zu aktivieren.</p>
+                    <p class="text-gray-400 mt-2 mb-6">Wir haben eine Bestätigungs-E-Mail an <strong>${auth.currentUser.email}</strong> gesendet. Bitte klicke auf den Link in der E-Mail, um dein Konto zu aktivieren. Überprüfe auch deinen Spam-Ordner.</p>
                     <div class="flex flex-col sm:flex-row gap-4 justify-center">
                         <button id="resend-verification-btn" class="btn-primary">E-Mail erneut senden</button>
                         <button id="check-verification-btn" class="btn-secondary">Ich habe verifiziert, weiter</button>
@@ -738,6 +778,7 @@
                     await sendEmailVerification(auth.currentUser);
                     showToast("Bestätigungs-E-Mail wurde erneut gesendet.", "success");
                 } catch (error) {
+                    console.error("Error resending verification email:", error);
                     showToast("Fehler beim Senden der E-Mail.", "error");
                 }
             });
@@ -873,7 +914,8 @@
                     banned: false, 
                     banCount: 0, 
                     bannedBy: null,
-                    unreadChats: [] 
+                    unreadChats: [],
+                    isManuallyVerified: false
                 });
                 
                 if (isFounder) {
@@ -881,7 +923,7 @@
                 }
                 
                 await sendEmailVerification(tempUser);
-                showToast('Registrierung erfolgreich! Bitte überprüfe dein Postfach zur Verifizierung.', 'success');
+                showToast('Registrierung erfolgreich! Bitte überprüfe dein Postfach (auch Spam) zur Verifizierung.', 'success');
                 closeModal(authModal);
             } catch (error) {
                 if (tempUser) {
@@ -890,6 +932,7 @@
                 if (error.code === 'auth/email-already-in-use') {
                     showToast('Diese E-Mail-Adresse wird bereits verwendet.', 'error');
                 } else {
+                    console.error("Registration error:", error);
                     showToast(`Fehler bei der Registrierung: ${error.message}`, 'error');
                 }
             } finally {
@@ -1626,7 +1669,8 @@
                         } else if (msg.type === 'audio') {
                             messageContentHTML = `<audio controls src="${msg.content}" class="max-w-full"></audio>`;
                         } else { 
-                            messageContentHTML = `<p class="text-white break-words">${msg.text || ''}</p>`;
+                            const linkedText = linkify(msg.text || '');
+                            messageContentHTML = `<p class="text-white break-words">${linkedText}</p>`;
                         }
                         
                         const timestampHTML = !msg.isDeleted ? `

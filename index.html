@@ -1634,16 +1634,16 @@
         };
         const acceptFriendRequest = async (senderId) => { try { const batch = writeBatch(db); const currentUserRef = doc(db, `users/${currentUser.uid}`); const senderUserRef = doc(db, `users/${senderId}`); batch.update(currentUserRef, { friends: arrayUnion(senderId), friendRequestsReceived: arrayRemove(senderId) }); batch.update(senderUserRef, { friends: arrayUnion(currentUser.uid), friendRequestsSent: arrayRemove(currentUser.uid) }); await batch.commit(); showToast('Freund hinzugefügt!', 'success'); } catch (error) { showToast(`Fehler: ${error.message}`, 'error'); } };
         const declineFriendRequest = async (senderId) => { try { const batch = writeBatch(db); const currentUserRef = doc(db, `users/${currentUser.uid}`); const senderUserRef = doc(db, `users/${senderId}`); batch.update(currentUserRef, { friendRequestsReceived: arrayRemove(senderId) }); batch.update(senderUserRef, { friendRequestsSent: arrayRemove(currentUser.uid) }); await batch.commit(); showToast('Anfrage abgelehnt.', 'info'); } catch (error) { showToast(`Fehler: ${error.message}`, 'error'); } };
+        
         const displayFriends = async (friendUids) => {
             const container = document.getElementById('friends-list'); if(!container) return;
             
-            // Clear existing listeners to prevent duplicates
             Object.values(friendsStatusUnsubscribers).forEach(unsub => unsub());
             friendsStatusUnsubscribers = {};
 
             if (!friendUids || friendUids.length === 0) { container.innerHTML = `<p class="text-gray-500">Du hast noch keine Freunde.</p>`; return; }
             
-            container.innerHTML = ''; // Clear list before re-rendering
+            container.innerHTML = '';
             
             for (const uid of friendUids) {
                 const userDocRef = doc(db, 'users', uid);
@@ -1661,21 +1661,22 @@
                         
                         let statusHtml = '';
                         if (user.presence === 'online') {
-                            statusHtml = `<i data-lucide="circle" class="w-3 h-3 text-green-500 fill-current"></i>`;
+                            statusHtml = `<div class="flex items-center gap-1.5"><div class="w-2 h-2 bg-green-500 rounded-full"></div><span class="text-xs text-gray-300">Online</span></div>`;
                         } else if (user.presence === 'away') {
-                            statusHtml = `<i data-lucide="moon" class="w-3 h-3 text-yellow-400 fill-current"></i>`;
+                            statusHtml = `<div class="flex items-center gap-1.5"><div class="w-2 h-2 bg-yellow-400 rounded-full"></div><span class="text-xs text-gray-400">Abwesend</span></div>`;
                         } else if (user.last_seen) {
                             statusHtml = `<span class="text-xs text-gray-500">${formatLastSeen(user.last_seen)}</span>`;
                         }
 
-                        friendCard.innerHTML = `<div class="flex items-center gap-3">
-                                <div class="relative">
-                                    <img src="${user.photoURL || `https://placehold.co/40x40/1E293B/FFFFFF?text=${user.displayName.charAt(0)}`}" class="w-10 h-10 rounded-full object-cover">
-                                    <div class="absolute -bottom-1 -right-1" id="status-icon-${user.id}">${statusHtml}</div>
+                        friendCard.innerHTML = `
+                            <div class="flex items-center gap-3 flex-grow overflow-hidden">
+                                <img src="${user.photoURL || `https://placehold.co/40x40/1E293B/FFFFFF?text=${user.displayName.charAt(0)}`}" class="w-10 h-10 rounded-full object-cover flex-shrink-0">
+                                <div class="overflow-hidden">
+                                    <p class="font-semibold text-white truncate">${user.displayName}</p>
+                                    <div id="status-text-${user.id}">${statusHtml}</div>
                                 </div>
-                                <p class="font-semibold text-white">${user.displayName}</p>
                             </div>
-                            <div class="flex items-center gap-2">
+                            <div class="flex items-center gap-2 flex-shrink-0">
                                 <button data-id="${user.id}" data-name="${user.displayName}" class="call-friend-btn text-green-400 hover:text-green-300"><i data-lucide="phone"></i></button>
                                 <button data-id="${user.id}" data-name="${user.displayName}" class="chat-friend-btn text-blue-400 hover:text-blue-300"><i data-lucide="message-circle"></i></button>
                                 <button data-id="${user.id}" data-name="${user.displayName}" class="report-user-btn text-yellow-400 hover:text-yellow-300"><i data-lucide="flag"></i></button>
@@ -1772,7 +1773,7 @@
 
                 modalTitle.textContent = chatName;
                 modalSubtitle.textContent = ''; // Clear previous subtitle
-                modalContent.innerHTML = `<div id="chat-messages" class="h-96 overflow-y-auto flex flex-col-reverse p-2 space-y-2 space-y-reverse"></div>`;
+                modalContent.innerHTML = `<div id="chat-messages" class="h-96 overflow-y-auto flex flex-col-reverse p-2"></div>`;
                 
                 modalFooter.innerHTML = `
                     <div id="typing-indicator" class="text-sm text-gray-400 h-5 italic mb-1"></div>
@@ -1902,7 +1903,7 @@
                         const isSender = msg.senderId === currentUser.uid;
                         const isGroupOwner = type === 'group' && contextData && contextData.ownerId === currentUser.uid;
                         
-                        messageEl.className = `w-full flex group relative ${isSender ? 'justify-end' : 'justify-start'}`;
+                        messageEl.className = `w-full flex flex-col group relative py-2 ${isSender ? 'items-end' : 'items-start'}`;
                         
                         let readReceipt = '';
                         if (isSender && !msg.isDeleted) {
@@ -1930,13 +1931,17 @@
                         // Render reactions
                         let reactionsHTML = '';
                         if (msg.reactions && Object.keys(msg.reactions).length > 0) {
-                            reactionsHTML += '<div class="absolute -bottom-4 flex gap-1 z-10">';
+                            let hasReactions = false;
+                            let content = '';
                             for (const [emoji, uids] of Object.entries(msg.reactions)) {
                                 if (uids.length > 0) {
-                                    reactionsHTML += `<div class="glass-card px-2 py-0.5 rounded-full text-xs flex items-center gap-1"><span>${emoji}</span><span>${uids.length}</span></div>`;
+                                    hasReactions = true;
+                                    content += `<div class="glass-card px-2 py-0.5 rounded-full text-xs flex items-center gap-1"><span>${emoji}</span><span>${uids.length}</span></div>`;
                                 }
                             }
-                            reactionsHTML += '</div>';
+                            if(hasReactions) {
+                                reactionsHTML = `<div class="flex gap-1 mt-1.5 ${isSender ? 'justify-end' : 'justify-start'}">${content}</div>`;
+                            }
                         }
                         
                         const timestampHTML = !msg.isDeleted ? `
@@ -1954,22 +1959,24 @@
                             : (msg.isDeleted ? 'bg-slate-800/50' : (msg.type === 'gif' || msg.type === 'image' ? 'bg-transparent' : 'bg-slate-700'));
 
                         messageEl.innerHTML = `
-                            <div class="flex items-center gap-2 ${isSender ? 'flex-row-reverse' : 'flex-row'}">
-                                ${!isSender ? `<button data-message-id="${msg.id}" class="reaction-btn opacity-0 group-hover:opacity-100 text-gray-400 hover:text-white transition-opacity"><i data-lucide="smile-plus"></i></button>` : ''}
-                                <div class="flex items-end gap-2 ${isSender ? 'flex-row-reverse' : 'flex-row'}">
-                                    <div class="max-w-xs lg:max-w-md px-3 py-2 rounded-lg ${messageBoxClass} relative">
+                            <div class="flex items-center gap-2 ${isSender ? 'flex-row-reverse' : 'flex-row'} w-full">
+                                ${!isSender ? `<button data-message-id="${msg.id}" class="reaction-btn self-end mb-2 opacity-0 group-hover:opacity-100 text-gray-400 hover:text-white transition-opacity"><i data-lucide="smile-plus"></i></button>` : ''}
+                                
+                                <div class="flex-shrink-1 max-w-[85%]">
+                                    <div class="px-3 py-2 rounded-lg ${messageBoxClass}">
                                         ${senderNameHTML}
                                         ${messageContentHTML}
                                         ${timestampHTML}
-                                        ${reactionsHTML}
                                     </div>
+                                    ${reactionsHTML}
                                 </div>
-                                ${isSender ? `<button data-message-id="${msg.id}" class="reaction-btn opacity-0 group-hover:opacity-100 text-gray-400 hover:text-white transition-opacity"><i data-lucide="smile-plus"></i></button>` : ''}
+
+                                ${isSender ? `<button data-message-id="${msg.id}" class="reaction-btn self-end mb-2 opacity-0 group-hover:opacity-100 text-gray-400 hover:text-white transition-opacity"><i data-lucide="smile-plus"></i></button>` : ''}
                             </div>
                         `;
                         
                         if (canDelete) {
-                            const messageBox = messageEl.querySelector('.max-w-xs');
+                            const messageBox = messageEl.querySelector('.max-w-\\[85\\%\\]');
                             const handlePressStart = (e) => {
                                 const targetElement = e.currentTarget;
                                 clearTimeout(longPressTimer);

@@ -176,7 +176,7 @@
     </div>
 
     <!-- Emoji & GIF Picker Popover -->
-    <div id="chat-picker-popover" class="hidden fixed z-[60] glass-card p-2 rounded-lg w-full max-w-sm">
+    <div id="chat-picker-popover" class="hidden fixed z-[60] glass-card p-2 rounded-lg w-full max-w-sm top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2">
         <!-- Content will be injected by JS -->
     </div>
 
@@ -696,7 +696,7 @@
                     last_seen: serverTimestamp(),
                 });
                 const userStatusDatabaseRef = dbRef(rtdb, '/status/' + currentUser.uid);
-                set(userStatusDatabaseRef, { state: 'offline', last_changed: rtdbServerTimestamp() });
+                await set(userStatusDatabaseRef, { state: 'offline', last_changed: rtdbServerTimestamp() });
             }
             showLoader('Abmelden...');
             try {
@@ -709,73 +709,66 @@
             }
         };
 
-        const setupPresenceSystem = (uid) => {
+        const setupPresenceSystem = (user) => {
+            const uid = user.uid;
             const userStatusDatabaseRef = dbRef(rtdb, '/status/' + uid);
             const userStatusFirestoreRef = doc(db, '/users/' + uid);
 
-            const isOfflineForDatabase = {
-                state: 'offline',
-                last_changed: rtdbServerTimestamp(),
-            };
-            const isOnlineForDatabase = {
-                state: 'online',
-                last_changed: rtdbServerTimestamp(),
-            };
-             const isAwayForDatabase = {
-                state: 'away',
-                last_changed: rtdbServerTimestamp(),
-            };
+            const isOfflineForDatabase = { state: 'offline', last_changed: rtdbServerTimestamp() };
+            const isOnlineForDatabase = { state: 'online', last_changed: rtdbServerTimestamp() };
+            const isAwayForDatabase = { state: 'away', last_changed: rtdbServerTimestamp() };
 
-            const isOfflineForFirestore = {
-                presence: 'offline',
-                last_seen: serverTimestamp(),
-            };
-            const isOnlineForFirestore = {
-                presence: 'online',
-                last_seen: serverTimestamp(),
-            };
-             const isAwayForFirestore = {
-                presence: 'away',
-                last_seen: serverTimestamp(),
-            };
+            const isOfflineForFirestore = { presence: 'offline', last_seen: serverTimestamp() };
+            const isOnlineForFirestore = { presence: 'online', last_seen: serverTimestamp() };
+            const isAwayForFirestore = { presence: 'away', last_seen: serverTimestamp() };
 
-            onValue(dbRef(rtdb, '.info/connected'), (snapshot) => {
+            const connectedRef = dbRef(rtdb, '.info/connected');
+            onValue(connectedRef, (snapshot) => {
                 if (snapshot.val() === false) {
-                    updateDoc(userStatusFirestoreRef, isOfflineForFirestore);
+                    // We're not connected, so we can't reliably update Firestore.
+                    // The onDisconnect hook for RTDB will handle this case for other clients.
                     return;
                 }
 
+                // When we connect, we set our status to online.
                 onDisconnect(userStatusDatabaseRef).set(isOfflineForDatabase).then(() => {
-                    onDisconnect(userStatusFirestoreRef).update(isOfflineForFirestore);
+                    // Set online status in both RTDB and Firestore when we connect.
+                    set(userStatusDatabaseRef, isOnlineForDatabase);
+                    updateDoc(userStatusFirestoreRef, isOnlineForFirestore);
                 });
+            });
 
-                set(userStatusDatabaseRef, isOnlineForDatabase);
-                updateDoc(userStatusFirestoreRef, isOnlineForFirestore);
+            const resetInactivityTimer = () => {
+                if (inactivityTimer) clearTimeout(inactivityTimer);
 
-                const resetTimer = () => {
-                    if (inactivityTimer) clearTimeout(inactivityTimer);
-                    
-                    const currentStatusRef = dbRef(rtdb, '/status/' + uid + '/state');
-                    onValue(currentStatusRef, (snap) => {
-                        if (snap.val() === 'away') {
-                             set(userStatusDatabaseRef, isOnlineForDatabase);
-                             updateDoc(userStatusFirestoreRef, isOnlineForFirestore);
-                        }
-                    }, { onlyOnce: true });
-
-                    inactivityTimer = setTimeout(() => {
-                        set(userStatusDatabaseRef, isAwayForDatabase);
-                        updateDoc(userStatusFirestoreRef, isAwayForFirestore);
-                    }, 150000); // 2.5 minutes
-                };
-
-                window.addEventListener('mousemove', resetTimer, { passive: true });
-                window.addEventListener('mousedown', resetTimer, { passive: true });
-                window.addEventListener('keypress', resetTimer, { passive: true });
-                window.addEventListener('scroll', resetTimer, { passive: true });
-                window.addEventListener('touchstart', resetTimer, { passive: true });
+                // If user was away, set them back to online
+                getDoc(userStatusFirestoreRef).then(docSnap => {
+                    if (docSnap.exists() && docSnap.data().presence === 'away') {
+                        set(userStatusDatabaseRef, isOnlineForDatabase);
+                        updateDoc(userStatusFirestoreRef, isOnlineForFirestore);
+                    }
+                });
                 
-                resetTimer();
+                inactivityTimer = setTimeout(() => {
+                    set(userStatusDatabaseRef, isAwayForDatabase);
+                    updateDoc(userStatusFirestoreRef, isAwayForFirestore);
+                }, 150000); // 2.5 minutes
+            };
+
+            window.addEventListener('mousemove', resetInactivityTimer, { passive: true });
+            window.addEventListener('mousedown', resetInactivityTimer, { passive: true });
+            window.addEventListener('keypress', resetInactivityTimer, { passive: true });
+            window.addEventListener('scroll', resetInactivityTimer, { passive: true });
+            window.addEventListener('touchstart', resetInactivityTimer, { passive: true });
+            
+            // Set initial timer
+            resetInactivityTimer();
+
+            window.addEventListener('beforeunload', async () => {
+                 if (currentUser) {
+                    await updateDoc(userStatusFirestoreRef, isOfflineForFirestore);
+                    await set(userStatusDatabaseRef, isOfflineForDatabase);
+                 }
             });
         };
 
@@ -788,7 +781,7 @@
                 if (unsubscribeUserListener) unsubscribeUserListener();
                 const userDocRef = doc(db, `users/${user.uid}`);
                 
-                setupPresenceSystem(user.uid);
+                setupPresenceSystem(user);
 
                 unsubscribeUserListener = onSnapshot(userDocRef, async (docSnap) => {
                     if (docSnap.exists()) {
@@ -1659,21 +1652,28 @@
                             container.appendChild(friendCard);
                         }
                         
-                        let statusHtml = '';
+                        let statusText = '';
+                        let statusDot = '';
+
                         if (user.presence === 'online') {
-                            statusHtml = `<div class="flex items-center gap-1.5"><div class="w-2 h-2 bg-green-500 rounded-full"></div><span class="text-xs text-gray-300">Online</span></div>`;
+                            statusText = `<span class="text-xs text-gray-300">Online</span>`;
+                            statusDot = `<div class="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-green-500 rounded-full border-2 border-slate-800"></div>`;
                         } else if (user.presence === 'away') {
-                            statusHtml = `<div class="flex items-center gap-1.5"><div class="w-2 h-2 bg-yellow-400 rounded-full"></div><span class="text-xs text-gray-400">Abwesend</span></div>`;
+                            statusText = `<span class="text-xs text-gray-400">Abwesend</span>`;
+                            statusDot = `<div class="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-yellow-400 rounded-full border-2 border-slate-800"></div>`;
                         } else if (user.last_seen) {
-                            statusHtml = `<span class="text-xs text-gray-500">${formatLastSeen(user.last_seen)}</span>`;
+                            statusText = `<span class="text-xs text-gray-500">${formatLastSeen(user.last_seen)}</span>`;
                         }
 
                         friendCard.innerHTML = `
                             <div class="flex items-center gap-3 flex-grow overflow-hidden">
-                                <img src="${user.photoURL || `https://placehold.co/40x40/1E293B/FFFFFF?text=${user.displayName.charAt(0)}`}" class="w-10 h-10 rounded-full object-cover flex-shrink-0">
+                                <div class="relative flex-shrink-0">
+                                    <img src="${user.photoURL || `https://placehold.co/40x40/1E293B/FFFFFF?text=${user.displayName.charAt(0)}`}" class="w-10 h-10 rounded-full object-cover">
+                                    ${statusDot}
+                                </div>
                                 <div class="overflow-hidden">
                                     <p class="font-semibold text-white truncate">${user.displayName}</p>
-                                    <div id="status-text-${user.id}">${statusHtml}</div>
+                                    <div id="status-text-${user.id}">${statusText}</div>
                                 </div>
                             </div>
                             <div class="flex items-center gap-2 flex-shrink-0">
@@ -1778,8 +1778,6 @@
                 modalFooter.innerHTML = `
                     <div id="typing-indicator" class="text-sm text-gray-400 h-5 italic mb-1"></div>
                     <form id="chat-form" class="flex gap-2 items-center">
-                        <button type="button" id="attach-image-btn" class="btn-secondary p-2"><i data-lucide="paperclip"></i></button>
-                        <input type="file" id="image-upload-input" class="hidden" accept="image/*">
                         <button type="button" id="gif-btn" class="btn-secondary p-2"><i data-lucide="file-image"></i></button>
                         <button type="button" id="mic-btn" class="btn-secondary p-2"><i data-lucide="mic"></i></button>
                         <div class="relative flex-grow">
@@ -1872,10 +1870,8 @@
                 lucide.createIcons();
                 openModal(genericModal);
                 
-                document.getElementById('attach-image-btn').addEventListener('click', () => document.getElementById('image-upload-input').click());
-                document.getElementById('image-upload-input').addEventListener('change', handleImageUpload);
-                document.getElementById('emoji-btn').addEventListener('click', () => togglePicker('emoji'));
-                document.getElementById('gif-btn').addEventListener('click', () => togglePicker('gif'));
+                document.getElementById('emoji-btn').addEventListener('click', (e) => togglePicker('emoji', e.currentTarget));
+                document.getElementById('gif-btn').addEventListener('click', (e) => togglePicker('gif', e.currentTarget));
                 document.getElementById('mic-btn').addEventListener('click', handleRecordButtonClick);
 
                 const collectionPath = type === 'group' ? `groups/${chatId}/messages` : `directMessages/${chatId}/messages`;
@@ -2577,7 +2573,7 @@
         
         // --- EMOJI, GIF & AUDIO FUNCTIONS ---
 
-        const togglePicker = (type) => {
+        const togglePicker = (type, buttonElement) => {
             if (activePicker === type) {
                 hidePicker();
             } else {
@@ -2792,73 +2788,6 @@
             } catch (error) {
                 console.error("Error sending audio message:", error);
                 showToast("Sprachnachricht konnte nicht gesendet werden.", "error");
-            }
-        };
-
-        const handleImageUpload = async (event) => {
-            const file = event.target.files[0];
-            if (!file || !activeChatId) return;
-
-            showLoader("Lade Bild hoch...");
-            try {
-                await auth.currentUser.getIdToken(true);
-                const fileRef = storageRef(storage, `chatImages/${activeChatId}/${Date.now()}_${file.name}`);
-                const uploadTask = uploadBytesResumable(fileRef, file, { contentType: file.type });
-
-                uploadTask.on('state_changed',
-                    (snapshot) => {
-                        const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-                        showLoader(`Lade Bild hoch... ${Math.round(progress)}%`);
-                    },
-                    (error) => {
-                        console.error("Image upload failed:", error);
-                        showToast("Bild-Upload fehlgeschlagen.", "error");
-                        hideLoader();
-                    },
-                    async () => {
-                        const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
-                        await sendImageMessage(downloadURL, activeChatId);
-                        hideLoader();
-                        showToast("Bild gesendet!", "success");
-                    }
-                );
-            } catch (error) {
-                console.error("Error during image upload process:", error);
-                showToast("Fehler beim Bild-Upload.", "error");
-                hideLoader();
-            }
-        };
-
-        const sendImageMessage = async (imageUrl, chatId) => {
-            if (!chatId || !activeChatType) return;
-            const collectionPath = activeChatType === 'group' ? `groups/${chatId}/messages` : `directMessages/${chatId}/messages`;
-            try {
-                await addDoc(collection(db, collectionPath), {
-                    type: 'image',
-                    content: imageUrl,
-                    text: '[Bild]',
-                    senderId: currentUser.uid,
-                    senderName: currentUserProfile.displayName,
-                    timestamp: serverTimestamp(),
-                    readBy: [currentUser.uid]
-                });
-
-                const chatDocRef = doc(db, activeChatType === 'group' ? 'groups' : 'directMessages', chatId);
-                const chatDocSnap = await getDoc(chatDocRef);
-                if (chatDocSnap.exists()) {
-                    const members = chatDocSnap.data().members;
-                    const batch = writeBatch(db);
-                    members.forEach(memberId => {
-                        if (memberId !== currentUser.uid) {
-                            const userRef = doc(db, 'users', memberId);
-                            batch.update(userRef, { unreadChats: arrayUnion(chatId) });
-                        }
-                    });
-                    await batch.commit();
-                }
-            } catch (error) {
-                console.error("Error sending image message:", error);
-                showToast("Bild konnte nicht gesendet werden.", "error");
             }
         };
         

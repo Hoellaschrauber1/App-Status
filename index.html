@@ -88,7 +88,7 @@
     <div class="stars"></div>
 
     <!-- Main Application Container -->
-    <div id="app-container" class="w-full h-full flex-col hidden">
+    <div id="app-container" class="w-full h-full flex flex-col hidden">
         
         <!-- Header -->
         <header class="w-full p-4 flex justify-between items-center">
@@ -680,31 +680,45 @@
             if (!currentUser) return;
             showLoader('Abmelden...');
 
-            try {
-                const uid = currentUser.uid;
-                const userStatusFirestoreRef = doc(db, 'users', uid);
-                
-                // Set presence to offline before signing out
-                await updateDoc(userStatusFirestoreRef, {
-                    presence: 'offline',
-                    last_seen: serverTimestamp(),
-                });
+            const uid = currentUser.uid;
 
-                // Cancel any pending onDisconnect operations to prevent conflicts
+            // 1. Detach all live listeners immediately.
+            if (unsubscribeUserListener) {
+                unsubscribeUserListener();
+                unsubscribeUserListener = null;
+            }
+            if (unsubscribeChatListener) unsubscribeChatListener();
+            if (unsubscribeTypingListener) unsubscribeTypingListener();
+            if (unsubscribeFriendStatusListener) unsubscribeFriendStatusListener();
+            Object.values(friendsStatusUnsubscribers).forEach(unsub => unsub());
+            friendsStatusUnsubscribers = {};
+
+            try {
+                // 2. Update presence in the background (fire-and-forget).
+                const userStatusFirestoreRef = doc(db, 'users', uid);
+                updateDoc(userStatusFirestoreRef, { presence: 'offline', last_seen: serverTimestamp() });
                 const userStatusDatabaseRef = dbRef(rtdb, '/status/' + uid);
                 onDisconnect(userStatusDatabaseRef).cancel();
-                await set(userStatusDatabaseRef, { state: 'offline', last_changed: rtdbServerTimestamp() });
+                set(userStatusDatabaseRef, { state: 'offline', last_changed: rtdbServerTimestamp() });
 
+                // 3. Sign out from Firebase Auth.
                 await signOut(auth);
+                
+                // 4. Show success message.
                 showToast('Erfolgreich abgemeldet.', 'info');
+
             } catch (error) {
                 console.error("Logout Error:", error);
                 showToast(`Fehler beim Abmelden: ${error.message}`, 'error');
             } finally {
-                // The onAuthStateChanged listener will hide the loader on success.
-                // No need to hide it here unless there's an error.
+                // 5. Force UI reset and state cleanup, regardless of success or failure.
+                currentUser = null;
+                currentUserProfile = null;
+                updateUIForLoggedOutUser();
+                hideLoader();
             }
         };
+
 
         const setupPresenceSystem = (user) => {
             const uid = user.uid;
@@ -720,7 +734,6 @@
             const connectedRef = dbRef(rtdb, '.info/connected');
             onValue(connectedRef, (snapshot) => {
                 if (snapshot.val() === false) {
-                    updateDoc(userStatusFirestoreRef, isOfflineForFirestore);
                     return;
                 }
 
@@ -747,7 +760,6 @@
                 return;
             }
 
-            // If not in maintenance, show the app
             appContainer.classList.remove('hidden');
             appContainer.classList.add('flex');
             maintenanceScreen.classList.add('hidden');
@@ -806,7 +818,10 @@
             } else {
                 currentUser = null;
                 currentUserProfile = null; 
-                if (unsubscribeUserListener) unsubscribeUserListener();
+                if (unsubscribeUserListener) {
+                    unsubscribeUserListener();
+                    unsubscribeUserListener = null;
+                }
                 updateUIForLoggedOutUser();
                 hideLoader();
             }
@@ -1042,7 +1057,7 @@
                 });
                 
                 if (isFounder) {
-                    await setDoc(metadataRef, { founderId: tempUser.uid });
+                    await setDoc(metadataRef, { founderId: tempUser.uid, maintenanceEnabled: false, maintenanceWhitelist: [] });
                 }
                 
                 await sendEmailVerification(tempUser);
@@ -1813,7 +1828,7 @@
                     activeChatGroupData.memberDetails = memberDetails;
 
                 } else if (type === 'direct' && contextData.friendId) {
-                    modalSubtitle.textContent = 'Direktnachricht';
+                   modalSubtitle.textContent = 'Direktnachricht';
                 }
 
                 lucide.createIcons();
@@ -2839,6 +2854,91 @@
                 console.error("Error handling reaction:", error);
                 showToast("Reaktion konnte nicht verarbeitet werden.", "error");
             }
+        };
+        
+        // --- MAINTENANCE MODE FUNCTIONS ---
+        const renderMaintenanceScreen = () => {
+            appContainer.classList.add('hidden');
+            appContainer.classList.remove('flex');
+            maintenanceScreen.classList.remove('hidden');
+            maintenanceScreen.classList.add('flex');
+        };
+
+        const renderSiteSettings = async () => {
+            const adminContentArea = document.getElementById('admin-content-area');
+            if (!adminContentArea) return;
+            adminContentArea.innerHTML = '<div class="loader"></div>';
+
+            const metadataRef = doc(db, `app-metadata/${appId}`);
+            const metadataSnap = await getDoc(metadataRef);
+            const metadata = metadataSnap.exists() ? metadataSnap.data() : { maintenanceEnabled: false, maintenanceWhitelist: [] };
+
+            let whitelistHtml = '';
+            if (metadata.maintenanceEnabled) {
+                const usersRef = collection(db, "users");
+                const usersSnap = await getDocs(usersRef);
+                const allUsers = usersSnap.docs.map(d => ({id: d.id, ...d.data()}));
+                
+                let userListHtml = '';
+                allUsers.forEach(user => {
+                    if (user.role === 'founder') return;
+                    const isWhitelisted = metadata.maintenanceWhitelist.includes(user.id);
+                    userListHtml += `
+                        <div class="glass-card p-3 flex items-center justify-between">
+                            <div class="flex items-center gap-3">
+                                <img src="${user.photoURL || `https://placehold.co/40x40/1E293B/FFFFFF?text=${user.displayName.charAt(0)}`}" class="w-10 h-10 rounded-full object-cover">
+                                <span>${user.displayName}</span>
+                            </div>
+                            <button data-uid="${user.id}" class="toggle-whitelist-btn ${isWhitelisted ? 'bg-red-600 hover:bg-red-500' : 'bg-green-600 hover:bg-green-500'} btn-primary text-sm">${isWhitelisted ? 'Entfernen' : 'Hinzufügen'}</button>
+                        </div>
+                    `;
+                });
+
+                whitelistHtml = `
+                    <div class="mt-6">
+                        <h3 class="text-lg font-semibold mb-2">Whitelist für Wartungsmodus</h3>
+                        <div class="space-y-2 max-h-64 overflow-y-auto">${userListHtml}</div>
+                    </div>
+                `;
+            }
+
+            adminContentArea.innerHTML = `
+                <div>
+                    <h3 class="text-lg font-semibold">Wartungsmodus</h3>
+                    <div class="flex items-center justify-between p-3 glass-card rounded-lg mt-2">
+                        <span>Seite für alle Nutzer (außer Gründer) sperren</span>
+                        <button id="toggle-maintenance-btn" class="${metadata.maintenanceEnabled ? 'bg-red-600 hover:bg-red-500' : 'bg-green-600 hover:bg-green-500'} btn-primary">${metadata.maintenanceEnabled ? 'Deaktivieren' : 'Aktivieren'}</button>
+                    </div>
+                    ${whitelistHtml}
+                </div>
+            `;
+            
+            adminContentArea.querySelectorAll('.toggle-whitelist-btn').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    const uid = btn.dataset.uid;
+                    const metadataRef = doc(db, `app-metadata/${appId}`);
+                    const metadataSnap = await getDoc(metadataRef);
+                    const currentWhitelist = metadataSnap.data().maintenanceWhitelist || [];
+                    
+                    if (currentWhitelist.includes(uid)) {
+                        await updateDoc(metadataRef, { maintenanceWhitelist: arrayRemove(uid) });
+                        showToast('Nutzer von Whitelist entfernt.', 'info');
+                    } else {
+                        await updateDoc(metadataRef, { maintenanceWhitelist: arrayUnion(uid) });
+                        showToast('Nutzer zu Whitelist hinzugefügt.', 'success');
+                    }
+                    renderSiteSettings(); // Refresh the view
+                });
+            });
+
+            document.getElementById('toggle-maintenance-btn').addEventListener('click', async () => {
+                const metadataRef = doc(db, `app-metadata/${appId}`);
+                const metadataSnap = await getDoc(metadataRef);
+                const isEnabled = metadataSnap.data().maintenanceEnabled || false;
+                await setDoc(metadataRef, { maintenanceEnabled: !isEnabled }, { merge: true });
+                showToast(`Wartungsmodus ${!isEnabled ? 'aktiviert' : 'deaktiviert'}.`, 'info');
+                renderSiteSettings();
+            });
         };
 
 

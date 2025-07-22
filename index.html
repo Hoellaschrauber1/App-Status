@@ -368,6 +368,23 @@
             return linkedText;
         };
         
+        const formatLastSeen = (timestamp) => {
+            if (!timestamp) return 'Unbekannt';
+            const now = new Date();
+            const lastSeenDate = timestamp.toDate();
+            const diffSeconds = Math.round((now - lastSeenDate) / 1000);
+            const diffMinutes = Math.round(diffSeconds / 60);
+            const diffHours = Math.round(diffMinutes / 60);
+            const diffDays = Math.round(diffHours / 24);
+
+            if (diffSeconds < 60) return `gerade eben`;
+            if (diffMinutes < 60) return `vor ${diffMinutes} Min.`;
+            if (diffHours < 24) return `vor ${diffHours} Std.`;
+            if (diffDays === 1) return `Gestern um ${lastSeenDate.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}`;
+            return `am ${lastSeenDate.toLocaleDateString('de-DE')}`;
+        };
+
+
         // --- ADMIN & REPORTING FUNCTIONS ---
         const showReportModal = (contentId, contentType, context = {}) => {
             const modalTitle = document.getElementById('generic-modal-title');
@@ -727,21 +744,49 @@
 
             const isOfflineForDatabase = { state: 'offline', last_changed: rtdbServerTimestamp() };
             const isOnlineForDatabase = { state: 'online', last_changed: rtdbServerTimestamp() };
-            
+            const isAwayForDatabase = { state: 'away', last_changed: rtdbServerTimestamp() };
+
             const isOfflineForFirestore = { presence: 'offline', last_seen: serverTimestamp() };
             const isOnlineForFirestore = { presence: 'online' };
+            const isAwayForFirestore = { presence: 'away' };
 
             const connectedRef = dbRef(rtdb, '.info/connected');
             onValue(connectedRef, (snapshot) => {
                 if (snapshot.val() === false) {
+                    // Firestore's onDisconnect will handle this.
                     return;
                 }
 
                 onDisconnect(userStatusDatabaseRef).set(isOfflineForDatabase).then(() => {
+                    onDisconnect(userStatusFirestoreRef).update(isOfflineForFirestore);
                     set(userStatusDatabaseRef, isOnlineForDatabase);
                     updateDoc(userStatusFirestoreRef, isOnlineForFirestore);
                 });
             });
+            
+            const resetInactivityTimer = () => {
+                if (inactivityTimer) clearTimeout(inactivityTimer);
+
+                getDoc(userStatusFirestoreRef).then(docSnap => {
+                    if (docSnap.exists() && docSnap.data().presence !== 'online') {
+                        set(userStatusDatabaseRef, isOnlineForDatabase);
+                        updateDoc(userStatusFirestoreRef, isOnlineForFirestore);
+                    }
+                });
+                
+                inactivityTimer = setTimeout(() => {
+                    set(userStatusDatabaseRef, isAwayForDatabase);
+                    updateDoc(userStatusFirestoreRef, isAwayForFirestore);
+                }, 150000); // 2.5 minutes
+            };
+
+            window.addEventListener('mousemove', resetInactivityTimer, { passive: true });
+            window.addEventListener('mousedown', resetInactivityTimer, { passive: true });
+            window.addEventListener('keypress', resetInactivityTimer, { passive: true });
+            window.addEventListener('scroll', resetInactivityTimer, { passive: true });
+            window.addEventListener('touchstart', resetInactivityTimer, { passive: true });
+            
+            resetInactivityTimer();
         };
 
         onAuthStateChanged(auth, async (user) => {
@@ -1053,7 +1098,9 @@
                     banCount: 0, 
                     bannedBy: null,
                     unreadChats: [],
-                    isManuallyVerified: false
+                    isManuallyVerified: false,
+                    notificationsEnabled: true, // Default sound notifications
+                    browserNotificationsEnabled: true // Default browser notifications
                 });
                 
                 if (isFounder) {
@@ -1631,46 +1678,66 @@
         const displayFriends = async (friendUids) => {
             const container = document.getElementById('friends-list'); if(!container) return;
             
+            Object.values(friendsStatusUnsubscribers).forEach(unsub => unsub());
+            friendsStatusUnsubscribers = {};
+
             if (!friendUids || friendUids.length === 0) { container.innerHTML = `<p class="text-gray-500">Du hast noch keine Freunde.</p>`; return; }
             
             container.innerHTML = '';
             
             for (const uid of friendUids) {
                 const userDocRef = doc(db, 'users', uid);
-                const userDoc = await getDoc(userDocRef);
+                friendsStatusUnsubscribers[uid] = onSnapshot(userDocRef, (userDoc) => {
+                    if (userDoc.exists()) {
+                        const user = {id: userDoc.id, ...userDoc.data()};
+                        
+                        let friendCard = document.getElementById(`friend-card-${user.id}`);
+                        if (!friendCard) {
+                            friendCard = document.createElement('div');
+                            friendCard.id = `friend-card-${user.id}`;
+                            friendCard.className = 'glass-card p-3 flex items-center justify-between';
+                            container.appendChild(friendCard);
+                        }
+                        
+                        let statusText = '';
+                        let statusDot = '';
 
-                if (userDoc.exists()) {
-                    const user = {id: userDoc.id, ...userDoc.data()};
-                    
-                    let friendCard = document.createElement('div');
-                    friendCard.id = `friend-card-${user.id}`;
-                    friendCard.className = 'glass-card p-3 flex items-center justify-between';
-                    
-                    friendCard.innerHTML = `
-                        <div class="flex items-center gap-3 flex-grow overflow-hidden">
-                            <div class="relative flex-shrink-0">
-                                <img src="${user.photoURL || `https://placehold.co/40x40/1E293B/FFFFFF?text=${user.displayName.charAt(0)}`}" class="w-10 h-10 rounded-full object-cover">
+                        if (user.presence === 'online') {
+                            statusText = `<span class="text-xs text-green-400">Online</span>`;
+                            statusDot = `<div class="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-green-500 rounded-full border-2 border-slate-800"></div>`;
+                        } else if (user.presence === 'away') {
+                            statusText = `<span class="text-xs text-yellow-400">Abwesend</span>`;
+                            statusDot = `<div class="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-yellow-400 rounded-full border-2 border-slate-800"></div>`;
+                        } else if (user.last_seen) {
+                            statusText = `<span class="text-xs text-gray-500">${formatLastSeen(user.last_seen)}</span>`;
+                        }
+
+                        friendCard.innerHTML = `
+                            <div class="flex items-center gap-3 flex-grow overflow-hidden">
+                                <div class="relative flex-shrink-0">
+                                    <img src="${user.photoURL || `https://placehold.co/40x40/1E293B/FFFFFF?text=${user.displayName.charAt(0)}`}" class="w-10 h-10 rounded-full object-cover">
+                                    ${statusDot}
+                                </div>
+                                <div class="overflow-hidden">
+                                    <p class="font-semibold text-white truncate">${user.displayName}</p>
+                                    <div id="status-text-${user.id}">${statusText}</div>
+                                </div>
                             </div>
-                            <div class="overflow-hidden">
-                                <p class="font-semibold text-white truncate">${user.displayName}</p>
-                            </div>
-                        </div>
-                        <div class="flex items-center gap-2 flex-shrink-0">
-                            <button data-id="${user.id}" data-name="${user.displayName}" class="call-friend-btn text-green-400 hover:text-green-300"><i data-lucide="phone"></i></button>
-                            <button data-id="${user.id}" data-name="${user.displayName}" class="chat-friend-btn text-blue-400 hover:text-blue-300"><i data-lucide="message-circle"></i></button>
-                            <button data-id="${user.id}" data-name="${user.displayName}" class="report-user-btn text-yellow-400 hover:text-yellow-300"><i data-lucide="flag"></i></button>
-                            <button data-id="${user.id}" class="remove-friend-btn text-red-500 hover:text-red-400"><i data-lucide="user-minus"></i></button>
-                        </div>`;
-                    
-                    container.appendChild(friendCard);
-                    
-                    friendCard.querySelector('.remove-friend-btn').addEventListener('click', () => removeFriend(user.id));
-                    friendCard.querySelector('.chat-friend-btn').addEventListener('click', () => openDirectChat(user.id, user.displayName));
-                    friendCard.querySelector('.call-friend-btn').addEventListener('click', () => showCallingModal(user.displayName));
-                    friendCard.querySelector('.report-user-btn').addEventListener('click', () => showReportModal(user.id, 'user', { userName: user.displayName }));
-                }
+                            <div class="flex items-center gap-2 flex-shrink-0">
+                                <button data-id="${user.id}" data-name="${user.displayName}" class="call-friend-btn text-green-400 hover:text-green-300"><i data-lucide="phone"></i></button>
+                                <button data-id="${user.id}" data-name="${user.displayName}" class="chat-friend-btn text-blue-400 hover:text-blue-300"><i data-lucide="message-circle"></i></button>
+                                <button data-id="${user.id}" data-name="${user.displayName}" class="report-user-btn text-yellow-400 hover:text-yellow-300"><i data-lucide="flag"></i></button>
+                                <button data-id="${user.id}" class="remove-friend-btn text-red-500 hover:text-red-400"><i data-lucide="user-minus"></i></button>
+                            </div>`;
+                        
+                        lucide.createIcons();
+                        friendCard.querySelector('.remove-friend-btn').addEventListener('click', () => removeFriend(user.id));
+                        friendCard.querySelector('.chat-friend-btn').addEventListener('click', () => openDirectChat(user.id, user.displayName));
+                        friendCard.querySelector('.call-friend-btn').addEventListener('click', () => showCallingModal(user.displayName));
+                        friendCard.querySelector('.report-user-btn').addEventListener('click', () => showReportModal(user.id, 'user', { userName: user.displayName }));
+                    }
+                });
             }
-            lucide.createIcons();
         };
         const removeFriend = async (friendId) => { showConfirmationModal('Bist du sicher, dass du diesen Freund entfernen möchtest?', async () => { try { const batch = writeBatch(db); const currentUserRef = doc(db, `users/${currentUser.uid}`); const friendUserRef = doc(db, `users/${friendId}`); batch.update(currentUserRef, { friends: arrayRemove(friendId) }); batch.update(friendUserRef, { friends: arrayRemove(currentUser.uid) }); await batch.commit(); showToast('Freund entfernt.', 'info'); } catch (error) { showToast(`Fehler: ${error.message}`, 'error'); } }); };
         
@@ -1828,7 +1895,21 @@
                     activeChatGroupData.memberDetails = memberDetails;
 
                 } else if (type === 'direct' && contextData.friendId) {
-                   modalSubtitle.textContent = 'Direktnachricht';
+                    const friendRef = doc(db, 'users', contextData.friendId);
+                    unsubscribeFriendStatusListener = onSnapshot(friendRef, (friendSnap) => {
+                        if (friendSnap.exists()) {
+                            const friendData = friendSnap.data();
+                            let statusText = '';
+                            if (friendData.presence === 'online') {
+                                statusText = 'Online';
+                            } else if (friendData.presence === 'away') {
+                                statusText = 'Abwesend';
+                            } else if (friendData.last_seen) {
+                                statusText = `Zuletzt online: ${formatLastSeen(friendData.last_seen)}`;
+                            }
+                            modalSubtitle.textContent = statusText;
+                        }
+                    });
                 }
 
                 lucide.createIcons();
@@ -1856,109 +1937,121 @@
                 const messagesContainer = document.getElementById('chat-messages');
                 const messagesQuery = query(collection(db, collectionPath), orderBy('timestamp', 'desc'));
                 unsubscribeChatListener = onSnapshot(messagesQuery, (snapshot) => {
-                    messagesContainer.innerHTML = '';
-                    snapshot.forEach(docSnap => {
-                        const msg = {id: docSnap.id, ...docSnap.data()};
-                        const messageEl = document.createElement('div');
-                        const isSender = msg.senderId === currentUser.uid;
-                        const isGroupOwner = type === 'group' && contextData && contextData.ownerId === currentUser.uid;
-                        
-                        messageEl.className = `w-full flex flex-col group relative py-2 ${isSender ? 'items-end' : 'items-start'}`;
-                        
-                        let readReceipt = '';
-                        if (isSender && !msg.isDeleted) {
-                            if (msg.readBy && msg.readBy.length > 1) {
-                                readReceipt = `<i data-lucide="check-check" class="w-4 h-4 text-blue-400"></i>`;
-                            } else {
-                                readReceipt = `<i data-lucide="check" class="w-4 h-4 text-gray-500"></i>`;
+                    snapshot.docChanges().forEach(change => {
+                        if (change.type === "added") {
+                            const msg = {id: change.doc.id, ...change.doc.data()};
+                            
+                            // Browser Notification Logic
+                            if (msg.senderId !== currentUser.uid && document.hidden && currentUserProfile.browserNotificationsEnabled && Notification.permission === 'granted') {
+                                showBrowserNotification(msg.senderName, msg.text || '[Bild/GIF gesendet]');
                             }
-                        }
 
-                        const canDelete = (isSender || isGroupOwner) && !msg.isDeleted;
-                        
-                        let messageContentHTML = '';
-                        if (msg.isDeleted) {
-                            messageContentHTML = `<p class="text-gray-500 italic">Diese Nachricht wurde gelöscht.</p>`;
-                        } else if (msg.type === 'gif' || msg.type === 'image') {
-                            messageContentHTML = `<a href="${msg.content}" target="_blank" rel="noopener noreferrer"><img src="${msg.content}" alt="Gesendetes Bild" class="rounded-lg max-w-xs h-auto mt-1 cursor-pointer hover:opacity-80"></a>`;
-                        } else if (msg.type === 'audio') {
-                            messageContentHTML = `<audio controls src="${msg.content}" class="max-w-full"></audio>`;
-                        } else { 
-                            const linkedText = linkify(msg.text || '');
-                            messageContentHTML = `<p class="text-white break-words">${linkedText}</p>`;
-                        }
-
-                        let reactionsHTML = '';
-                        if (msg.reactions && Object.keys(msg.reactions).length > 0) {
-                            let hasReactions = false;
-                            let content = '';
-                            for (const [emoji, uids] of Object.entries(msg.reactions)) {
-                                if (uids.length > 0) {
-                                    hasReactions = true;
-                                    content += `<div class="glass-card px-2 py-0.5 rounded-full text-xs flex items-center gap-1"><span>${emoji}</span><span>${uids.length}</span></div>`;
+                            const messageEl = document.createElement('div');
+                            const isSender = msg.senderId === currentUser.uid;
+                            const isGroupOwner = type === 'group' && contextData && contextData.ownerId === currentUser.uid;
+                            
+                            messageEl.className = `w-full flex flex-col group relative py-2 ${isSender ? 'items-end' : 'items-start'}`;
+                            
+                            let readReceipt = '';
+                            if (isSender && !msg.isDeleted) {
+                                if (msg.readBy && msg.readBy.length > 1) {
+                                    readReceipt = `<i data-lucide="check-check" class="w-4 h-4 text-blue-400"></i>`;
+                                } else {
+                                    readReceipt = `<i data-lucide="check" class="w-4 h-4 text-gray-500"></i>`;
                                 }
                             }
-                            if(hasReactions) {
-                                reactionsHTML = `<div class="flex gap-1 mt-1.5 ${isSender ? 'justify-end' : 'justify-start'}">${content}</div>`;
+
+                            const canDelete = (isSender || isGroupOwner) && !msg.isDeleted;
+                            
+                            let messageContentHTML = '';
+                            if (msg.isDeleted) {
+                                messageContentHTML = `<p class="text-gray-500 italic">Diese Nachricht wurde gelöscht.</p>`;
+                            } else if (msg.type === 'gif' || msg.type === 'image') {
+                                messageContentHTML = `<a href="${msg.content}" target="_blank" rel="noopener noreferrer"><img src="${msg.content}" alt="Gesendetes Bild" class="rounded-lg max-w-xs h-auto mt-1 cursor-pointer hover:opacity-80"></a>`;
+                            } else if (msg.type === 'audio') {
+                                messageContentHTML = `<audio controls src="${msg.content}" class="max-w-full"></audio>`;
+                            } else { 
+                                const linkedText = linkify(msg.text || '');
+                                messageContentHTML = `<p class="text-white break-words">${linkedText}</p>`;
+                            }
+
+                            let reactionsHTML = '';
+                            if (msg.reactions && Object.keys(msg.reactions).length > 0) {
+                                let hasReactions = false;
+                                let content = '';
+                                for (const [emoji, uids] of Object.entries(msg.reactions)) {
+                                    if (uids.length > 0) {
+                                        hasReactions = true;
+                                        content += `<div class="glass-card px-2 py-0.5 rounded-full text-xs flex items-center gap-1"><span>${emoji}</span><span>${uids.length}</span></div>`;
+                                    }
+                                }
+                                if(hasReactions) {
+                                    reactionsHTML = `<div class="flex gap-1 mt-1.5 ${isSender ? 'justify-end' : 'justify-start'}">${content}</div>`;
+                                }
+                            }
+                            
+                            const timestampHTML = !msg.isDeleted ? `
+                                <div class="flex items-center justify-end gap-1 mt-1">
+                                    <p class="text-xs text-gray-400">${new Date(msg.timestamp?.toDate()).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</p>
+                                    ${readReceipt}
+                                </div>` : '';
+
+                            const senderNameHTML = !isSender && type === 'group' && !msg.isDeleted
+                                ? `<p class="text-xs font-bold text-blue-300">${msg.senderName}</p>`
+                                : '';
+                            
+                            const messageBoxClass = isSender 
+                                ? (msg.type === 'gif' || msg.type === 'image' ? 'bg-transparent' : 'bg-blue-700')
+                                : (msg.isDeleted ? 'bg-slate-800/50' : (msg.type === 'gif' || msg.type === 'image' ? 'bg-transparent' : 'bg-slate-700'));
+
+                            messageEl.innerHTML = `
+                                <div class="flex items-center gap-2 ${isSender ? 'flex-row-reverse' : 'flex-row'} w-full">
+                                    ${!isSender ? `<button data-message-id="${msg.id}" class="reaction-btn self-end mb-2 opacity-0 group-hover:opacity-100 text-gray-400 hover:text-white transition-opacity"><i data-lucide="smile-plus"></i></button>` : ''}
+                                    
+                                    <div class="flex-shrink-1 max-w-[85%]">
+                                        <div class="px-3 py-2 rounded-lg ${messageBoxClass}">
+                                            ${senderNameHTML}
+                                            ${messageContentHTML}
+                                            ${timestampHTML}
+                                        </div>
+                                        ${reactionsHTML}
+                                    </div>
+
+                                    ${isSender ? `<button data-message-id="${msg.id}" class="reaction-btn self-end mb-2 opacity-0 group-hover:opacity-100 text-gray-400 hover:text-white transition-opacity"><i data-lucide="smile-plus"></i></button>` : ''}
+                                </div>
+                            `;
+                            
+                            if (canDelete) {
+                                const messageBox = messageEl.querySelector('.max-w-\\[85\\%\\]');
+                                const handlePressStart = (e) => {
+                                    const targetElement = e.currentTarget;
+                                    clearTimeout(longPressTimer);
+                                    longPressTimer = setTimeout(() => {
+                                        showMessageContextMenu(targetElement, chatId, msg.id, type, msg.senderId);
+                                    }, 500);
+                                };
+                                const handlePressEnd = () => clearTimeout(longPressTimer);
+
+                                messageBox.addEventListener('mousedown', handlePressStart);
+                                messageBox.addEventListener('mouseup', handlePressEnd);
+                                messageBox.addEventListener('mouseleave', handlePressEnd);
+                                messageBox.addEventListener('touchstart', (e) => {
+                                    e.preventDefault();
+                                    handlePressStart(e);
+                                });
+                                messageBox.addEventListener('touchend', handlePressEnd);
+                            }
+
+                            messagesContainer.insertBefore(messageEl, messagesContainer.firstChild);
+
+                            if (!isSender && !msg.isDeleted && (!msg.readBy || !msg.readBy.includes(currentUser.uid))) {
+                                updateDoc(change.doc.ref, { readBy: arrayUnion(currentUser.uid) });
                             }
                         }
-                        
-                        const timestampHTML = !msg.isDeleted ? `
-                            <div class="flex items-center justify-end gap-1 mt-1">
-                                <p class="text-xs text-gray-400">${new Date(msg.timestamp?.toDate()).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</p>
-                                ${readReceipt}
-                            </div>` : '';
-
-                        const senderNameHTML = !isSender && type === 'group' && !msg.isDeleted
-                            ? `<p class="text-xs font-bold text-blue-300">${msg.senderName}</p>`
-                            : '';
-                        
-                        const messageBoxClass = isSender 
-                            ? (msg.type === 'gif' || msg.type === 'image' ? 'bg-transparent' : 'bg-blue-700')
-                            : (msg.isDeleted ? 'bg-slate-800/50' : (msg.type === 'gif' || msg.type === 'image' ? 'bg-transparent' : 'bg-slate-700'));
-
-                        messageEl.innerHTML = `
-                            <div class="flex items-center gap-2 ${isSender ? 'flex-row-reverse' : 'flex-row'} w-full">
-                                ${!isSender ? `<button data-message-id="${msg.id}" class="reaction-btn self-end mb-2 opacity-0 group-hover:opacity-100 text-gray-400 hover:text-white transition-opacity"><i data-lucide="smile-plus"></i></button>` : ''}
-                                
-                                <div class="flex-shrink-1 max-w-[85%]">
-                                    <div class="px-3 py-2 rounded-lg ${messageBoxClass}">
-                                        ${senderNameHTML}
-                                        ${messageContentHTML}
-                                        ${timestampHTML}
-                                    </div>
-                                    ${reactionsHTML}
-                                </div>
-
-                                ${isSender ? `<button data-message-id="${msg.id}" class="reaction-btn self-end mb-2 opacity-0 group-hover:opacity-100 text-gray-400 hover:text-white transition-opacity"><i data-lucide="smile-plus"></i></button>` : ''}
-                            </div>
-                        `;
-                        
-                        if (canDelete) {
-                            const messageBox = messageEl.querySelector('.max-w-\\[85\\%\\]');
-                            const handlePressStart = (e) => {
-                                const targetElement = e.currentTarget;
-                                clearTimeout(longPressTimer);
-                                longPressTimer = setTimeout(() => {
-                                    showMessageContextMenu(targetElement, chatId, msg.id, type, msg.senderId);
-                                }, 500);
-                            };
-                            const handlePressEnd = () => clearTimeout(longPressTimer);
-
-                            messageBox.addEventListener('mousedown', handlePressStart);
-                            messageBox.addEventListener('mouseup', handlePressEnd);
-                            messageBox.addEventListener('mouseleave', handlePressEnd);
-                            messageBox.addEventListener('touchstart', (e) => {
-                                e.preventDefault();
-                                handlePressStart(e);
-                            });
-                            messageBox.addEventListener('touchend', handlePressEnd);
-                        }
-
-                        messagesContainer.appendChild(messageEl);
-
-                        if (!isSender && !msg.isDeleted && (!msg.readBy || !msg.readBy.includes(currentUser.uid))) {
-                            updateDoc(docSnap.ref, { readBy: arrayUnion(currentUser.uid) });
+                        if (change.type === "modified") {
+                           // This is where you would handle updates like read receipts or reactions in a more granular way if needed.
+                           // For now, re-rendering the whole list on any change is simpler.
+                           // To be more efficient, one could find the specific message element and update it.
                         }
                     });
 
@@ -2424,6 +2517,10 @@
                         <label for="notifications-toggle">Benachrichtigungston</label>
                         <input type="checkbox" id="notifications-toggle" class="toggle-checkbox">
                     </div>
+                    <div class="flex justify-between items-center p-3 glass-card rounded-lg">
+                        <label for="browser-notifications-toggle">Browser-Benachrichtigungen</label>
+                        <input type="checkbox" id="browser-notifications-toggle" class="toggle-checkbox">
+                    </div>
                 </div>
             `;
             modalFooter.innerHTML = '';
@@ -2433,8 +2530,12 @@
             document.getElementById('change-password-btn').addEventListener('click', showChangePasswordModal);
             
             const notifToggle = document.getElementById('notifications-toggle');
-            notifToggle.checked = currentUserProfile.notificationsEnabled || false;
+            notifToggle.checked = currentUserProfile.notificationsEnabled ?? true;
             notifToggle.addEventListener('change', toggleNotifications);
+
+            const browserNotifToggle = document.getElementById('browser-notifications-toggle');
+            browserNotifToggle.checked = currentUserProfile.browserNotificationsEnabled ?? true;
+            browserNotifToggle.addEventListener('change', toggleBrowserNotifications);
         };
 
         const showChangeNameModal = () => {
@@ -2856,7 +2957,7 @@
             }
         };
         
-        // --- MAINTENANCE MODE FUNCTIONS ---
+        // --- MAINTENANCE MODE & NOTIFICATION FUNCTIONS ---
         const renderMaintenanceScreen = () => {
             appContainer.classList.add('hidden');
             appContainer.classList.remove('flex');
@@ -2939,6 +3040,37 @@
                 showToast(`Wartungsmodus ${!isEnabled ? 'aktiviert' : 'deaktiviert'}.`, 'info');
                 renderSiteSettings();
             });
+        };
+        
+        const showBrowserNotification = (title, body) => {
+            new Notification(title, { body, icon: './favicon.ico' }); // Assuming you have a favicon
+        };
+
+        const toggleBrowserNotifications = async (e) => {
+            const enabled = e.target.checked;
+            const userRef = doc(db, 'users', currentUser.uid);
+
+            if (enabled) {
+                if (Notification.permission === 'granted') {
+                    await updateDoc(userRef, { browserNotificationsEnabled: true });
+                    showToast("Browser-Benachrichtigungen aktiviert.", "success");
+                } else if (Notification.permission === 'denied') {
+                    showToast("Browser-Benachrichtigungen sind blockiert. Bitte in den Browsereinstellungen ändern.", "error");
+                    e.target.checked = false;
+                } else {
+                    const permission = await Notification.requestPermission();
+                    if (permission === 'granted') {
+                        await updateDoc(userRef, { browserNotificationsEnabled: true });
+                        showToast("Browser-Benachrichtigungen aktiviert.", "success");
+                    } else {
+                        showToast("Berechtigung für Benachrichtigungen nicht erteilt.", "info");
+                        e.target.checked = false;
+                    }
+                }
+            } else {
+                await updateDoc(userRef, { browserNotificationsEnabled: false });
+                showToast("Browser-Benachrichtigungen deaktiviert.", "info");
+            }
         };
 
 

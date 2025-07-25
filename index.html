@@ -792,14 +792,20 @@
         onAuthStateChanged(auth, async (user) => {
             if (isRegistering) { return; }
 
-            const metadataRef = doc(db, `app-metadata/${appId}`);
-            const metadataSnap = await getDoc(metadataRef);
-            const metadata = metadataSnap.exists() ? metadataSnap.data() : { maintenanceEnabled: false, founderId: null, maintenanceWhitelist: [] };
+            let metadata = { maintenanceEnabled: false, founderId: null };
+            try {
+                const metadataRef = doc(db, `app-metadata/${appId}`);
+                const metadataSnap = await getDoc(metadataRef);
+                if (metadataSnap.exists()) {
+                    metadata = metadataSnap.data();
+                }
+            } catch (error) {
+                console.warn("Could not fetch app metadata. Assuming no maintenance.", error);
+            }
             
             const isFounder = user && user.uid === metadata.founderId;
-            const isWhitelisted = user && metadata.maintenanceWhitelist?.includes(user.uid);
 
-            if (metadata.maintenanceEnabled && !isFounder && !isWhitelisted) {
+            if (metadata.maintenanceEnabled && !isFounder) {
                 renderMaintenanceScreen();
                 hideLoader();
                 return;
@@ -1481,25 +1487,30 @@
 
             const allChats = new Map();
             
-            if (currentUserProfile.role === 'founder') {
-                const allGroupsQuery = query(collection(db, 'groups'), where('isDeleted', '==', false));
-                const groupSnaps = await getDocs(allGroupsQuery);
-                groupSnaps.forEach(doc => allChats.set(doc.id, { type: 'group', id: doc.id, ...doc.data() }));
-            } else {
+            try {
+                // Fetch groups where the current user is a member
                 const memberGroupsQuery = query(collection(db, 'groups'), where('members', 'array-contains', currentUser.uid), where('isDeleted', '==', false));
+                // Fetch all public groups
                 const publicGroupsQuery = query(collection(db, 'groups'), where('isPublic', '==', true), where('isDeleted', '==', false));
+                
                 const [memberGroupsSnap, publicGroupsSnap] = await Promise.all([
                     getDocs(memberGroupsQuery),
                     getDocs(publicGroupsQuery)
                 ]);
+
                 memberGroupsSnap.forEach(doc => allChats.set(doc.id, { type: 'group', id: doc.id, ...doc.data() }));
                 publicGroupsSnap.forEach(doc => {
                     if (!allChats.has(doc.id)) {
                         allChats.set(doc.id, { type: 'group', id: doc.id, ...doc.data() });
                     }
                 });
+
+            } catch (error) {
+                console.error("Error fetching groups:", error);
+                showToast("Gruppen konnten nicht geladen werden.", "error");
             }
             
+            // Fetch direct messages
             const dmsQuery = query(collection(db, 'directMessages'), where('members', 'array-contains', currentUser.uid));
             const dmsSnap = await getDocs(dmsQuery);
             
@@ -1507,9 +1518,13 @@
                 const chatData = dmDoc.data();
                 const friendId = chatData.members.find(id => id !== currentUser.uid);
                 if (friendId) {
-                    const friendDoc = await getDoc(doc(db, 'users', friendId));
-                    if (friendDoc.exists()) {
-                        allChats.set(dmDoc.id, { type: 'direct', id: dmDoc.id, friendId, name: friendDoc.data().displayName, photoURL: friendDoc.data().photoURL, ...chatData });
+                    try {
+                        const friendDoc = await getDoc(doc(db, 'users', friendId));
+                        if (friendDoc.exists()) {
+                            allChats.set(dmDoc.id, { type: 'direct', id: dmDoc.id, friendId, name: friendDoc.data().displayName, photoURL: friendDoc.data().photoURL, ...chatData });
+                        }
+                    } catch (e) {
+                         console.warn(`Could not fetch friend data for DM: ${dmDoc.id}`, e);
                     }
                 }
             }
@@ -1534,7 +1549,7 @@
                         </div>
                         ${isMember 
                             ? `<button class="open-btn btn-secondary text-sm flex-shrink-0" data-group-id="${chat.id}" data-group-name="${chat.name}">Öffnen</button>`
-                            : `<button class="join-btn btn-primary text-sm flex-shrink-0" data-group-id="${chat.id}">Beitreten</button>`
+                            : (chat.isPublic ? `<button class="join-btn btn-primary text-sm flex-shrink-0" data-group-id="${chat.id}">Beitreten</button>` : '')
                         }`;
                 } else { // Direct Message
                     chatItem.innerHTML = `
@@ -1579,64 +1594,51 @@
             });
         };
 
-        const showAddFriendModal = async () => {
+        const showAddFriendModal = () => {
             const modalTitle = document.getElementById('generic-modal-title');
             const modalContent = document.getElementById('generic-modal-content');
             const modalFooter = document.getElementById('generic-modal-footer');
             modalTitle.textContent = 'Freund hinzufügen';
-            document.getElementById('generic-modal-subtitle').textContent = '';
+            document.getElementById('generic-modal-subtitle').textContent = 'Bitte gib die genaue Benutzer-ID deines Freundes ein.';
             document.getElementById('generic-modal-header-actions').innerHTML = '';
-            modalContent.innerHTML = `<p class="text-gray-400 mb-4">Suche nach dem Anzeigenamen (optional).</p><input type="text" id="search-user-input" placeholder="Nutzer suchen..." class="w-full p-3 bg-slate-800 border border-slate-700 rounded-lg"><div id="search-results" class="mt-4 space-y-2 max-h-96 overflow-y-auto"></div>`;
-            modalFooter.innerHTML = '';
+            modalContent.innerHTML = `
+                <form id="add-friend-form">
+                    <input type="text" id="add-friend-uid-input" placeholder="Benutzer-ID hier einfügen..." class="w-full p-3 bg-slate-800 border border-slate-700 rounded-lg">
+                </form>
+            `;
+            modalFooter.innerHTML = `<button id="send-friend-request-btn" class="btn-primary w-full">Anfrage senden</button>`;
             openModal(genericModal);
 
-            try {
-                const usersRef = collection(db, "users");
-                const allUsersSnapshot = await getDocs(usersRef);
-                const allUsers = allUsersSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-
-                const renderUserList = (usersToRender) => {
-                    const resultsContainer = document.getElementById('search-results');
-                    resultsContainer.innerHTML = '';
-                    usersToRender.forEach((user) => {
-                        if (user.id === currentUser.uid) return;
-                        const isFriend = currentUserProfile.friends.includes(user.id);
-                        const requestSent = currentUserProfile.friendRequestsSent?.includes(user.id);
-                        const userCard = document.createElement('div');
-                        userCard.className = 'glass-card p-3 flex items-center justify-between';
-                        
-                        let buttonHtml = `<button data-id="${user.id}" class="add-friend-search-btn btn-secondary text-sm">Hinzufügen</button>`;
-                        if (isFriend) {
-                            buttonHtml = `<button class="btn-secondary text-sm" disabled>Freund</button>`;
-                        } else if (requestSent) {
-                            buttonHtml = `<button class="btn-secondary text-sm" disabled>Angefragt</button>`;
-                        }
-
-                        userCard.innerHTML = `<div class="flex items-center gap-3"><img src="${user.photoURL || `https://placehold.co/40x40/1E293B/FFFFFF?text=${user.displayName.charAt(0)}`}" class="w-10 h-10 rounded-full object-cover"><div><p class="font-semibold text-white">${user.displayName}</p></div></div>${buttonHtml}`;
-                        resultsContainer.appendChild(userCard);
-                    });
-                    resultsContainer.querySelectorAll('.add-friend-search-btn').forEach(btn => {
-                        btn.addEventListener('click', async () => {
-                            const targetUserId = btn.dataset.id;
-                            btn.disabled = true;
-                            btn.textContent = 'Angefragt';
-                            await sendFriendRequest(targetUserId);
-                        });
-                    });
-                };
-
-                renderUserList(allUsers); 
-
-                document.getElementById('search-user-input').addEventListener('keyup', (e) => {
-                    const searchTerm = e.target.value.trim().toLowerCase();
-                    const filteredUsers = allUsers.filter(user => user.displayName.toLowerCase().includes(searchTerm));
-                    renderUserList(filteredUsers);
-                });
-            } catch (error) {
-                console.error("Error fetching users for friend search:", error);
-                modalContent.innerHTML = `<div class="text-center p-4"><p class="text-red-400">Benutzersuche fehlgeschlagen.</p><p class="text-gray-400 mt-2 text-sm">Dies liegt wahrscheinlich an den Firestore-Sicherheitsregeln. Administratoren benötigen eine "list"-Berechtigung für die "users"-Sammlung, um alle Benutzer anzuzeigen.</p></div>`;
-            }
+            document.getElementById('send-friend-request-btn').addEventListener('click', async () => {
+                const targetUserId = document.getElementById('add-friend-uid-input').value.trim();
+                if (!targetUserId) {
+                    showToast("Bitte gib eine Benutzer-ID ein.", "error");
+                    return;
+                }
+                if (targetUserId === currentUser.uid) {
+                    showToast("Du kannst dich nicht selbst als Freund hinzufügen.", "error");
+                    return;
+                }
+                
+                showLoader("Prüfe Benutzer...");
+                try {
+                    const userDoc = await getDoc(doc(db, 'users', targetUserId));
+                    if (!userDoc.exists()) {
+                        showToast("Benutzer mit dieser ID nicht gefunden.", "error");
+                        hideLoader();
+                        return;
+                    }
+                    await sendFriendRequest(targetUserId);
+                    closeModal(genericModal);
+                } catch (error) {
+                    console.error("Error adding friend:", error);
+                    showToast("Fehler beim Senden der Anfrage.", "error");
+                } finally {
+                    hideLoader();
+                }
+            });
         };
+
         const sendFriendRequest = async (targetUserId) => { 
             try { 
                 const targetUserRef = doc(db, `users/${targetUserId}`); 
@@ -1792,6 +1794,13 @@
                 return;
             }
             const groupData = { id: groupSnap.id, ...groupSnap.data() };
+            
+            // Security Check: Ensure user is a member before opening
+            if (!groupData.members.includes(currentUser.uid) && currentUserProfile.role !== 'founder') {
+                 showToast("Du bist kein Mitglied dieser Gruppe.", "error");
+                 return;
+            }
+            
             openChat(groupData.id, groupData.name, 'group', groupData);
         };
 
@@ -1820,7 +1829,7 @@
 
                 modalTitle.textContent = chatName;
                 modalSubtitle.textContent = ''; 
-                modalContent.innerHTML = `<div id="chat-messages" class="h-96 overflow-y-auto flex flex-col-reverse p-2"></div>`;
+                modalContent.innerHTML = `<div id="chat-messages" class="h-96 overflow-y-auto flex flex-col p-2"></div>`; // Removed flex-col-reverse
                 
                 modalFooter.innerHTML = `
                     <div id="typing-indicator" class="text-sm text-gray-400 h-5 italic mb-1"></div>
@@ -1922,34 +1931,19 @@
                 const collectionPath = type === 'group' ? `groups/${chatId}/messages` : `directMessages/${chatId}/messages`;
                 const chatRoomRef = doc(db, type === 'group' ? 'groups' : 'directMessages', chatId);
 
-                try {
-                    await setDoc(chatRoomRef, { 
-                        ...(type === 'direct' && { members: chatId.split('_') }),
-                        typing: {}
-                    }, { merge: true });
-                } catch (e) {
-                    console.error("Error ensuring chat document exists:", e);
-                    showToast("Konnte den Chat nicht öffnen.", "error");
-                    closeModal(genericModal);
-                    return;
-                }
-
-                const messagesContainer = document.getElementById('chat-messages');
-                const messagesQuery = query(collection(db, collectionPath), orderBy('timestamp', 'desc'));
+                const messagesQuery = query(collection(db, collectionPath), orderBy('timestamp', 'asc'));
+                
+                // --- CHAT RENDERING LOGIC ---
                 unsubscribeChatListener = onSnapshot(messagesQuery, (snapshot) => {
-                    snapshot.docChanges().forEach(change => {
+                    const messagesContainer = document.getElementById('chat-messages');
+                    if (!messagesContainer) return;
+
+                    snapshot.docChanges().forEach((change) => {
                         if (change.type === "added") {
                             const msg = {id: change.doc.id, ...change.doc.data()};
-                            
-                            // Browser Notification Logic
-                            if (msg.senderId !== currentUser.uid && document.hidden && currentUserProfile.browserNotificationsEnabled && Notification.permission === 'granted') {
-                                showBrowserNotification(msg.senderName, msg.text || '[Bild/GIF gesendet]');
-                            }
-
-                            const messageEl = document.createElement('div');
                             const isSender = msg.senderId === currentUser.uid;
-                            const isGroupOwner = type === 'group' && contextData && contextData.ownerId === currentUser.uid;
                             
+                            const messageEl = document.createElement('div');
                             messageEl.className = `w-full flex flex-col group relative py-2 ${isSender ? 'items-end' : 'items-start'}`;
                             
                             let readReceipt = '';
@@ -1960,8 +1954,6 @@
                                     readReceipt = `<i data-lucide="check" class="w-4 h-4 text-gray-500"></i>`;
                                 }
                             }
-
-                            const canDelete = (isSender || isGroupOwner) && !msg.isDeleted;
                             
                             let messageContentHTML = '';
                             if (msg.isDeleted) {
@@ -1990,9 +1982,9 @@
                                 }
                             }
                             
-                            const timestampHTML = !msg.isDeleted ? `
+                            const timestampHTML = !msg.isDeleted && msg.timestamp && typeof msg.timestamp.toDate === 'function' ? `
                                 <div class="flex items-center justify-end gap-1 mt-1">
-                                    <p class="text-xs text-gray-400">${new Date(msg.timestamp?.toDate()).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</p>
+                                    <p class="text-xs text-gray-400">${msg.timestamp.toDate().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</p>
                                     ${readReceipt}
                                 </div>` : '';
 
@@ -2008,7 +2000,7 @@
                                 <div class="flex items-center gap-2 ${isSender ? 'flex-row-reverse' : 'flex-row'} w-full">
                                     ${!isSender ? `<button data-message-id="${msg.id}" class="reaction-btn self-end mb-2 opacity-0 group-hover:opacity-100 text-gray-400 hover:text-white transition-opacity"><i data-lucide="smile-plus"></i></button>` : ''}
                                     
-                                    <div class="flex-shrink-1 max-w-[85%]">
+                                    <div class="flex-shrink-1 max-w-[85%]" data-sender-id="${msg.senderId}">
                                         <div class="px-3 py-2 rounded-lg ${messageBoxClass}">
                                             ${senderNameHTML}
                                             ${messageContentHTML}
@@ -2021,47 +2013,51 @@
                                 </div>
                             `;
                             
-                            if (canDelete) {
-                                const messageBox = messageEl.querySelector('.max-w-\\[85\\%\\]');
-                                const handlePressStart = (e) => {
-                                    const targetElement = e.currentTarget;
-                                    clearTimeout(longPressTimer);
-                                    longPressTimer = setTimeout(() => {
-                                        showMessageContextMenu(targetElement, chatId, msg.id, type, msg.senderId);
-                                    }, 500);
-                                };
-                                const handlePressEnd = () => clearTimeout(longPressTimer);
-
-                                messageBox.addEventListener('mousedown', handlePressStart);
-                                messageBox.addEventListener('mouseup', handlePressEnd);
-                                messageBox.addEventListener('mouseleave', handlePressEnd);
-                                messageBox.addEventListener('touchstart', (e) => {
-                                    e.preventDefault();
-                                    handlePressStart(e);
-                                });
-                                messageBox.addEventListener('touchend', handlePressEnd);
-                            }
-
-                            messagesContainer.insertBefore(messageEl, messagesContainer.firstChild);
+                            messagesContainer.appendChild(messageEl);
+                            messagesContainer.scrollTop = messagesContainer.scrollHeight; // Scroll to bottom
 
                             if (!isSender && !msg.isDeleted && (!msg.readBy || !msg.readBy.includes(currentUser.uid))) {
                                 updateDoc(change.doc.ref, { readBy: arrayUnion(currentUser.uid) });
                             }
                         }
-                        if (change.type === "modified") {
-                           // This is where you would handle updates like read receipts or reactions in a more granular way if needed.
-                           // For now, re-rendering the whole list on any change is simpler.
-                           // To be more efficient, one could find the specific message element and update it.
-                        }
                     });
-
+                    
                     lucide.createIcons();
+
                     messagesContainer.querySelectorAll('.reaction-btn').forEach(btn => {
-                        btn.addEventListener('click', (e) => {
-                            showReactionPicker(e.currentTarget, btn.dataset.messageId);
-                        });
+                        btn.addEventListener('click', (e) => showReactionPicker(e.currentTarget, btn.dataset.messageId));
                     });
+                    
+                    messagesContainer.querySelectorAll('.max-w-\\[85\\%\\]').forEach(messageBox => {
+                        const isSender = messageBox.dataset.senderId === currentUser.uid;
+                        const isGroupOwner = activeChatGroupData && activeChatGroupData.ownerId === currentUser.uid;
+                        const canDelete = isSender || isGroupOwner;
+
+                        if (!canDelete) return;
+
+                        const msgId = messageBox.parentElement.querySelector('.reaction-btn')?.dataset.messageId;
+                        if (!msgId) return;
+
+                        const handlePressStart = (e) => {
+                            const targetElement = e.currentTarget;
+                            clearTimeout(longPressTimer);
+                            longPressTimer = setTimeout(() => {
+                                showMessageContextMenu(targetElement, chatId, msgId, type, messageBox.dataset.senderId);
+                            }, 500);
+                        };
+                        const handlePressEnd = () => clearTimeout(longPressTimer);
+
+                        messageBox.addEventListener('mousedown', handlePressStart);
+                        messageBox.addEventListener('mouseup', handlePressEnd);
+                        messageBox.addEventListener('mouseleave', handlePressEnd);
+                        messageBox.addEventListener('touchstart', (e) => { e.preventDefault(); handlePressStart(e); });
+                        messageBox.addEventListener('touchend', handlePressEnd);
+                    });
+                }, (error) => {
+                    console.error("Error listening to messages:", error);
+                    modalContent.innerHTML = `<div class="text-center p-4"><p class="text-red-400">Fehler beim Laden der Nachrichten.</p><p class="text-gray-400 mt-2 text-sm">Dies liegt wahrscheinlich an den Firestore-Sicherheitsregeln. Sie müssen Mitglied eines Chats sein, um Nachrichten lesen zu können.</p></div>`;
                 });
+
 
                 const typingIndicator = document.getElementById('typing-indicator');
                 unsubscribeTypingListener = onSnapshot(chatRoomRef, (docSnap) => {
@@ -2080,45 +2076,55 @@
                 chatInput.addEventListener('keyup', (e) => handleMentionInput(e));
                 chatInput.addEventListener('input', () => {
                     clearTimeout(typingTimeout);
-                    updateDoc(chatRoomRef, { [`typing.${currentUser.uid}`]: true });
-                    typingTimeout = setTimeout(() => {
-                        updateDoc(chatRoomRef, { [`typing.${currentUser.uid}`]: false });
-                    }, 2000);
+                    updateDoc(chatRoomRef, { [`typing.${currentUser.uid}`]: true }).catch(err => console.log("Typing update failed, doc may not exist yet."));
                 });
 
                 document.getElementById('chat-form').addEventListener('submit', async (e) => {
                     e.preventDefault();
                     clearTimeout(typingTimeout);
-                    updateDoc(chatRoomRef, { [`typing.${currentUser.uid}`]: false });
+                    updateDoc(chatRoomRef, { [`typing.${currentUser.uid}`]: false }).catch(err => {});
+                    
                     const text = chatInput.value.trim();
                     if (text) {
                         chatInput.value = '';
+                        
+                        const messageData = {
+                            text,
+                            type: 'text',
+                            senderId: currentUser.uid,
+                            senderName: currentUserProfile.displayName,
+                            timestamp: serverTimestamp(),
+                            readBy: [currentUser.uid]
+                        };
+
                         try {
-                            await addDoc(collection(db, collectionPath), { 
-                                text, 
-                                type: 'text',
-                                senderId: currentUser.uid, 
-                                senderName: currentUserProfile.displayName, 
-                                timestamp: serverTimestamp(), 
-                                readBy: [currentUser.uid] 
+                            const batch = writeBatch(db);
+                            
+                            // Ensure the parent chat document exists, especially for new DMs
+                            if (type === 'direct') {
+                                batch.set(chatRoomRef, { members: chatId.split('_') }, { merge: true });
+                            }
+
+                            const newMessageRef = doc(collection(db, collectionPath));
+                            batch.set(newMessageRef, messageData);
+                            
+                            // Update unread counts for other members
+                            const chatDocSnap = await getDoc(chatRoomRef);
+                            const members = chatDocSnap.exists() ? chatDocSnap.data().members : (type === 'direct' ? chatId.split('_') : []);
+                            
+                            members.forEach(memberId => {
+                                if (memberId !== currentUser.uid) {
+                                    const userRef = doc(db, 'users', memberId);
+                                    batch.update(userRef, { unreadChats: arrayUnion(chatId) });
+                                }
                             });
 
-                            const chatDocSnap = await getDoc(chatRoomRef);
-                            if (chatDocSnap.exists()) {
-                                const members = chatDocSnap.data().members;
-                                const batch = writeBatch(db);
-                                members.forEach(memberId => {
-                                    if (memberId !== currentUser.uid) {
-                                        const userRef = doc(db, 'users', memberId);
-                                        batch.update(userRef, { unreadChats: arrayUnion(chatId) });
-                                    }
-                                });
-                                await batch.commit();
-                            }
+                            await batch.commit();
 
                         } catch (error) {
                             console.error("Error sending message:", error);
                             showToast("Nachricht konnte nicht gesendet werden.", "error");
+                            chatInput.value = text;
                         }
                     }
                 });
@@ -2175,7 +2181,8 @@
                     text: "Diese Nachricht wurde gelöscht.",
                     content: null,
                     type: 'text',
-                    isDeleted: true
+                    isDeleted: true,
+                    reactions: {}
                 });
             } catch (error) {
                 console.error("Error 'deleting' message:", error);
@@ -2321,7 +2328,7 @@
             list.innerHTML = '';
 
             for(const memberId of members) {
-                const userDoc = await getDoc(doc(db, 'users', memberId));
+                const userDoc = await getDoc(doc(db, `users/${memberId}`));
                 if (userDoc.exists()) {
                     const memberData = userDoc.data();
                     const card = document.createElement('div');
